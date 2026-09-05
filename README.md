@@ -1,0 +1,125 @@
+# o11y-proxy
+
+An agent-friendly observability proxy in Elixir. One HTTP+JSON interface over Sentry,
+ClickHouse, and VictoriaMetrics (Logflare/BigQuery deferred), so an agent can debug
+production without learning three query dialects.
+
+Status: early design/planning stage — no implementation yet.
+
+## Example queries
+
+Pseudo-requests against the canonical query API, one per v1 backend.
+
+### ClickHouse logs — summary
+
+```json
+POST /v1/query
+{
+  "sources": ["app_logs"],
+  "signal": "logs",
+  "from": "now-1h", "to": "now",
+  "filters": [
+    {"field": "severity", "op": "gte", "value": "error"},
+    {"field": "service", "op": "eq", "value": "checkout-api"}
+  ],
+  "mode": "summary",
+  "limit": 50
+}
+```
+
+Native (`app_logs`):
+```sql
+SELECT toStartOfInterval(Timestamp, INTERVAL 60 SECOND) AS bucket,
+       SeverityText, ServiceName, count()
+FROM otel.otel_logs
+WHERE Timestamp BETWEEN {from:DateTime64} AND {to:DateTime64}
+  AND SeverityText >= {severity:String}
+  AND ServiceName = {service:String}
+GROUP BY bucket, SeverityText, ServiceName
+ORDER BY bucket DESC
+LIMIT 50
+```
+
+### ClickHouse traces — sample
+
+```json
+POST /v1/query
+{
+  "sources": ["otel_traces"],
+  "signal": "traces",
+  "from": "now-15m", "to": "now",
+  "filters": [
+    {"field": "service", "op": "eq", "value": "checkout-api"},
+    {"field": "attributes.duration_ms", "op": "gte", "value": 1000}
+  ],
+  "mode": "sample",
+  "limit": 20
+}
+```
+
+Same adapter as `app_logs`, different source config (`otel_traces` table, its own field
+mapping).
+
+### Sentry errors — summary
+
+```json
+POST /v1/query
+{
+  "sources": ["prod_errors"],
+  "signal": "errors",
+  "from": "now-24h", "to": "now",
+  "filters": [
+    {"field": "severity", "op": "eq", "value": "error"},
+    {"field": "body", "op": "contains", "value": "timeout"}
+  ],
+  "mode": "summary",
+  "limit": 50
+}
+```
+
+Native (`prod_errors`):
+```
+GET /api/0/projects/my-org/my-project/issues/?query=is:unresolved level:error timeout&statsPeriod=24h
+```
+
+### VictoriaMetrics — structured and raw
+
+```json
+POST /v1/query
+{
+  "sources": ["prod_metrics"],
+  "signal": "metrics",
+  "from": "now-1h", "to": "now",
+  "filters": [
+    {"field": "name", "op": "eq", "value": "http_request_duration_seconds"},
+    {"field": "labels.service", "op": "eq", "value": "checkout-api"}
+  ],
+  "mode": "full"
+}
+```
+
+Native (`prod_metrics`):
+```
+GET /api/v1/query_range?query=http_request_duration_seconds{service="checkout-api"}&start=...&end=...&step=15s
+```
+
+Raw escape hatch:
+```json
+POST /v1/query
+{
+  "sources": ["prod_metrics"],
+  "raw": "rate(http_requests_total{service=\"checkout-api\"}[5m])",
+  "from": "now-1h", "to": "now"
+}
+```
+
+### Cross-backend correlation
+
+```json
+POST /v1/context
+{"trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"}
+```
+
+Bundles, in one call: the `otel_traces` spans for that trace, the `app_logs` lines sharing
+the trace ID, the `prod_errors` Sentry issue if the trace ID appears in an event's
+contexts, and `prod_metrics` for `checkout-api` over the trace's window.
