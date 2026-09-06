@@ -232,7 +232,10 @@ defmodule O11yProxy.CLI do
   # `server.distribution: false` is the documented off switch. Someone who set it does not
   # need to be told about it on every invocation.
   defp describe(:disabled), do: nil
-  defp describe(:no_daemon), do: "no daemon running"
+  # `Node.connect/1` answers `false` for "no such node" and for a rejected cookie alike —
+  # the distinction is not available at this layer, so the note names both rather than
+  # asserting the one that is only usually right.
+  defp describe(:no_daemon), do: "no daemon running (or its cookie doesn't match)"
 
   defp describe({:no_distribution, reason}),
     do: "could not start Erlang distribution (#{inspect(reason)})"
