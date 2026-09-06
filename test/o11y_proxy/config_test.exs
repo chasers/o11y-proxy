@@ -34,7 +34,7 @@ defmodule O11yProxy.ConfigTest do
     """)
 
     assert {:ok, %Config{} = config} = Config.load(path: path)
-    assert config.server == %{port: 4001, auth: :none}
+    assert config.server == %{port: 4001, auth: :none, distribution: true}
     assert %{limit: 25, max_window: "3d", timeout: "10s"} = config.defaults
     assert [%Config.Source{} = source] = config.sources
     assert source.name == "app_logs"
@@ -56,7 +56,7 @@ defmodule O11yProxy.ConfigTest do
     assert {:ok, %Config{server: server, defaults: defaults, sources: []}} =
              Config.load(path: path)
 
-    assert server == %{port: 4000, auth: :none}
+    assert server == %{port: 4000, auth: :none, distribution: true}
 
     assert defaults == %{
              limit: 50,

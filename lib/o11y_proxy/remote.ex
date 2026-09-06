@@ -19,6 +19,22 @@ defmodule O11yProxy.Remote do
   `errors` list is non-empty, which is the normal path for a fan-out where one source is
   down (`.plans/04-cross-cutting.md`). `{:error, body}` is a request that could not be
   served at all: a malformed query, an unknown source. `body` is JSON-encodable either way.
+
+  ## Reaching a running daemon
+
+  The CLI prefers a daemon when one is up, because it already holds warm connection pools
+  and live circuit-breaker state. The hop is Erlang distribution rather than HTTP, so the
+  two processes exchange native terms and only the CLI ever encodes JSON.
+
+  `node_name/1` derives the daemon's node name from the *config*, so both sides compute
+  the same one with no handshake file to write, stale-lock, or clean up — and two daemons
+  on different ports don't collide.
+
+  `start_distribution/1` binds distribution to loopback *before* `net_kernel` starts.
+  `:erpc` is remote code execution; the distribution port must never be reachable off-box.
+  With that in place the cookie is the remaining barrier, and both sides get it
+  automatically by being the same binary — which also means a Burrito binary and a tarball
+  release do not share one, and simply fall back to in-process rather than failing.
   """
 
   alias O11yProxy.{Context, Query, Response, ResponseError, Sources}
@@ -34,6 +50,39 @@ defmodule O11yProxy.Remote do
   """
   @spec protocol_version() :: pos_integer()
   def protocol_version, do: @protocol_version
+
+  @doc """
+  The daemon's node name for a given config.
+
+  Derived from the port so that both sides compute the same name without exchanging
+  anything, and so two daemons with different configs never collide on one name.
+  """
+  @spec node_name(O11yProxy.Config.t()) :: node()
+  def node_name(%O11yProxy.Config{server: %{port: port}}),
+    do: :"o11y_proxy_#{port}@127.0.0.1"
+
+  @doc """
+  Starts `net_kernel` under `name`, bound to loopback.
+
+  The `inet_dist_use_interface` setting has to be in place *before* `net_kernel` starts —
+  it is read when the listen socket is opened — which is why this is one function both
+  sides call rather than two similar blocks that could drift apart. Without it, the
+  distribution port would accept connections from off-box, and `:erpc` is remote code
+  execution.
+
+  Already-started is success: a caller that finds distribution running (a tarball release
+  started with `-name`, say) should use it rather than fail.
+  """
+  @spec start_distribution(node()) :: :ok | {:error, term()}
+  def start_distribution(name) do
+    Application.put_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+    case :net_kernel.start(name, %{name_domain: :longnames}) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc """
   Runs one command. `request` is the same string-keyed map the corresponding HTTP

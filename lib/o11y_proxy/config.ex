@@ -13,14 +13,21 @@ defmodule O11yProxy.Config do
   defstruct [:server, :defaults, :sources]
 
   @type t :: %__MODULE__{
-          server: %{port: pos_integer(), auth: :none | :token},
+          server: %{port: pos_integer(), auth: :none | :token, distribution: boolean()},
           defaults: %{limit: pos_integer(), max_window: String.t(), timeout: String.t()},
           sources: [Source.t()]
         }
 
   @server_schema [
     port: [type: :pos_integer, default: 4000],
-    auth: [type: {:in, ["none", "token"]}, default: "none"]
+    auth: [type: {:in, ["none", "token"]}, default: "none"],
+    distribution: [
+      type: :boolean,
+      default: true,
+      doc:
+        "let the CLI reach a running daemon over Erlang distribution on loopback " <>
+          "(`.plans/07-cli.md`). Off means every CLI invocation runs in-process."
+    ]
   ]
 
   @defaults_schema [
