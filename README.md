@@ -1,15 +1,16 @@
 # o11y-proxy
 
-An agent-friendly observability proxy in Elixir. One HTTP+JSON interface over Sentry,
-ClickHouse, and VictoriaMetrics (Logflare/BigQuery deferred), so an agent can debug
-production without learning three query dialects.
+An agent-friendly observability proxy in Elixir. One interface — HTTP+JSON, or a CLI —
+over Sentry, ClickHouse, and VictoriaMetrics (Logflare/BigQuery deferred), so an agent
+can debug production without learning three query dialects.
 
 Status: ClickHouse, VictoriaMetrics, and Sentry adapters implemented and passing their
 contract tests, plus cross-backend correlation — `/v1/query` (single source) and
 `/v1/context` (fan-out across every configured source) are both live, with circuit
 breakers, attribute redaction, response byte ceilings, and cursor pagination (Phases 0-5,
-see `.plans/05-roadmap.md`). Not built yet: the result cache, per-source rate limiting,
-and the agent eval suite.
+see `.plans/05-roadmap.md`). There is also a CLI, so a one-shot question needs no daemon
+at all. Not built yet: the result cache, per-source rate limiting, and the agent eval
+suite.
 
 ## Install
 
@@ -39,6 +40,107 @@ tar xzf o11y_proxy-0.1.0-linux-x86_64.tar.gz
 The binary is the better first-run experience; the tarball is what you want under systemd,
 since `daemon`/`stop`/`remote`/`rpc` come with it. Note the tarball is built for the
 platform it was released from (linux x86_64), while the binaries are cross-compiled.
+
+## Two ways to run it
+
+The daemon is what the HTTP API needs, and what you want under systemd. But for one-shot
+local debugging — and for an agent that can already shell out — a daemon lifecycle is pure
+overhead: a config to write, a process to keep alive, a port to not collide with, and an
+"is it running?" check to teach. So every endpoint is also a subcommand:
+
+```bash
+o11y-proxy context --trace-id 4bf92f3577b34da6a3ce929d0e0e4736 | jq
+o11y-proxy query --source app_logs --signal logs --from now-1h --to now \
+  --filter severity=error --filter service!=cron
+o11y-proxy sources
+o11y-proxy schema app_logs
+o11y-proxy health
+```
+
+A bare `o11y-proxy` (or `o11y-proxy serve`) is still the server it always was.
+
+The commands mirror the HTTP API rather than inventing a second vocabulary, and both go
+through the same core: `o11y-proxy query ...` and `POST /v1/query` produce the same body,
+byte for byte, including redaction and byte-ceiling truncation.
+
+Results are JSON on stdout; notes and errors go to stderr, so `| jq` stays clean. Add
+`--pretty` if you're reading it yourself. Exit code is 0 whenever a response was
+produced — including a partial one, where a source failed and `errors[]` says which — and
+1 for a usage, config, or connection failure. `o11y-proxy --help` has the full surface.
+
+### Filters
+
+`--filter` takes one compact form per canonical operator, and repeats:
+
+| Form | Operator | Example |
+|---|---|---|
+| `field=v` | eq | `--filter severity=error` |
+| `field!=v` | neq | `--filter service!=cron` |
+| `field>=v` | gte | `--filter attributes.duration_ms>=1000` |
+| `field<=v` | lte | `--filter attributes.duration_ms<=50` |
+| `field~v` | contains | `--filter body~timeout` |
+| `field=~v` | regex | `--filter 'body=~^GET'` |
+| `field?` | exists | `--filter trace_id?` |
+
+Values that look like numbers or booleans are sent as numbers and booleans, because the
+backends' columns have types even though a shell doesn't. Wrap a value in double quotes to
+keep it a string: `--filter 'status="500"'`.
+
+`in` is the one canonical operator with no compact form — comma-splitting would be
+ambiguous against values that legitimately contain commas. Use `--raw` or the HTTP API.
+
+### It uses a running daemon if there is one
+
+A CLI invocation looks for a daemon first and calls it if it finds one, so the command
+shares that daemon's warm connection pools and circuit-breaker state instead of opening
+fresh connections to every source it touches. If there's no daemon, it runs the same code
+in-process and tells you so on stderr:
+
+```
+note: no daemon running (or its cookie doesn't match) — ran in-process in 0.2s.
+      `o11y-proxy serve` in another terminal keeps connections warm.
+```
+
+That note appears only when stdout is a terminal, and `--quiet` suppresses it, so a script
+or an agent piping to `jq` never sees it. Either path produces identical output.
+
+**How much it actually buys you**, measured against a live Sentry source (3-run averages,
+same machine):
+
+| command | with a daemon | in-process |
+|---|---|---|
+| `sources` (no network) | 181 ms | 185 ms |
+| `health` (one round trip) | 930 ms | 1316 ms |
+| `query` (one round trip) | 1735 ms | 1700 ms |
+
+So: it saves connection setup, and nothing else. The CLI is a fresh process either way, so
+it pays the same ~180 ms of BEAM start regardless, and once a backend is on the other end
+of a network the round trip dominates. Worth having, not worth restructuring your workflow
+around — which is why the fallback is silent by default and the note doesn't promise speed.
+
+**What this means in practice.** A daemon plus a CLI invocation form a two-node Erlang
+cluster on loopback:
+
+- The daemon starts a node named after its port (`o11y_proxy_4000@127.0.0.1`), so two
+  daemons on different ports don't collide, and each CLI run joins under a throwaway name.
+- Distribution is **bound to 127.0.0.1**, so the port is never reachable off-box.
+- Authentication is the Erlang **cookie**, in `releases/COOKIE` inside the release. Treat
+  that file as a credential: anyone who can read it and reach the port can run arbitrary
+  code on the node. A cookie is generated per release build, so artifacts from one build
+  share it and artifacts from different builds don't — a mismatch isn't an error, the CLI
+  just falls back to running in-process.
+- Starting a distributed node starts **epmd**, a small name-resolution daemon, if one isn't
+  already running. It's part of Erlang, it listens on 127.0.0.1:4369, and it outlives the
+  command — so an `epmd` process in your process list after running the CLI is expected,
+  not a leak.
+
+If you'd rather none of that happened, turn it off — every invocation then runs in-process:
+
+```yaml
+server:
+  distribution: false
+```
+
 
 ## Quickstart (from source)
 
