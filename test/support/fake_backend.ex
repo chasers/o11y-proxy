@@ -62,7 +62,7 @@ defmodule O11yProxy.Test.FakeBackend do
         [
           "SELECT * FROM #{state.table}",
           "WHERE ts BETWEEN {from:DateTime} AND {to:DateTime}",
-          Enum.map_join(clauses, "", &" AND #{&1}"),
+          Enum.map_join(clauses, &" AND #{&1}"),
           "LIMIT #{limit}"
         ]
         |> Enum.join(" ")
@@ -116,7 +116,9 @@ defmodule O11yProxy.Test.FakeBackend do
     filters
     |> Enum.with_index(1)
     |> Enum.map_reduce(%{}, fn {filter, i}, params ->
-      key = String.to_atom("p#{i}")
+      # `:"p#{i}"` rather than String.to_atom, matching ClickHouse.SQL.clause_for/3 — the
+      # index is ours, not the caller's, so the atom set is bounded by filters-per-query.
+      key = :"p#{i}"
       {clause, value} = clause_for(filter, key)
       {clause, Map.put(params, key, value)}
     end)

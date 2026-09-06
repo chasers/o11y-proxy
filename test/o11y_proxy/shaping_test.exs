@@ -65,7 +65,7 @@ defmodule O11yProxy.ShapingTest do
 
       collapsed = Shaping.collapse_duplicates(records)
 
-      assert length(collapsed) == 2
+      assert [_, _] = collapsed
       assert Enum.at(collapsed, 0).timestamp == "t1"
       assert Enum.at(collapsed, 0).attributes["duplicate_count"] == 2
       assert Enum.at(collapsed, 1).timestamp == "t3"
@@ -131,7 +131,7 @@ defmodule O11yProxy.ShapingTest do
       ]
 
       shaped = Shaping.shape(records, :full)
-      assert length(shaped) == 2
+      assert [_, _] = shaped
       assert Enum.all?(shaped, &(&1.attributes["token"] == "[REDACTED]"))
       assert Enum.all?(shaped, &(&1.attributes["stack"] == big))
     end
@@ -173,7 +173,7 @@ defmodule O11yProxy.ShapingTest do
 
       shaped = Shaping.enforce_byte_ceiling(response, [:data], 800)
 
-      assert length(shaped.data) < 10
+      assert Enum.count_until(shaped.data, 10) < 10
       assert shaped.meta.truncated == true
       assert shaped.meta.returned == length(shaped.data)
       assert shaped.meta.total_matched == 10
@@ -221,7 +221,7 @@ defmodule O11yProxy.ShapingTest do
 
       shaped = Shaping.enforce_byte_ceiling(response, [:trace, :logs], 400)
 
-      assert length(shaped.trace) < 5
+      assert Enum.count_until(shaped.trace, 5) < 5
       assert shaped.meta.truncated == true
     end
   end

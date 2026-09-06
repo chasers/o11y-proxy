@@ -50,6 +50,6 @@ defmodule O11yProxy.Backends.SentryTest do
         |> String.replace("\\\\", "")
         |> String.replace("\\\"", "")
 
-      stripped |> String.graphemes() |> Enum.count(&(&1 == "\"")) == 2
+      stripped |> String.replace(~r/[^"]/, "") |> String.length() == 2
     end
 end

@@ -2,6 +2,7 @@ defmodule O11yProxy.CLI.ArgsTest do
   use ExUnit.Case, async: true
 
   alias O11yProxy.CLI.Args
+  alias O11yProxy.Query.Filter
 
   describe "commands" do
     test "no arguments is the server, so an existing systemd unit keeps working" do
@@ -246,7 +247,7 @@ defmodule O11yProxy.CLI.ArgsTest do
   test "every filter map parses as a canonical filter" do
     for raw <- ["severity=error", "s!=c", "d>=1", "d<=1", "b~x", "b=~x", "t?"] do
       assert {:ok, map} = Args.parse_filter(raw)
-      assert {:ok, _} = O11yProxy.Query.Filter.parse(map)
+      assert {:ok, _} = Filter.parse(map)
     end
   end
 end

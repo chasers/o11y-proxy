@@ -61,9 +61,8 @@ defmodule O11yProxy.Config do
   def load(opts \\ []) do
     with {:ok, path} <- resolve_path(opts),
          {:ok, raw} <- read_yaml(path),
-         {:ok, interpolated} <- interpolate(raw),
-         {:ok, config} <- build(interpolated) do
-      {:ok, config}
+         {:ok, interpolated} <- interpolate(raw) do
+      build(interpolated)
     end
   end
 
@@ -148,14 +147,11 @@ defmodule O11yProxy.Config do
   defp auth_atom("token"), do: :token
 
   defp validate_block(map, schema, block_name) when is_map(map) do
-    opts = for {k, v} <- map, into: [], do: {String.to_atom(k), v}
-
-    case NimbleOptions.validate(opts, schema) do
-      {:ok, validated} ->
-        {:ok, validated}
-
-      {:error, %NimbleOptions.ValidationError{} = e} ->
-        {:error, {:invalid_block, block_name, Exception.message(e)}}
+    with {:ok, opts} <- to_opts(map, schema),
+         {:ok, validated} <- validate(opts, schema) do
+      {:ok, validated}
+    else
+      {:error, message} -> {:error, {:invalid_block, block_name, message}}
     end
   end
 
@@ -206,14 +202,38 @@ defmodule O11yProxy.Config do
   end
 
   defp validate_source_opts(rest, schema, source_name) do
-    opts = for {k, v} <- rest, into: [], do: {String.to_atom(k), v}
+    with {:ok, opts} <- to_opts(rest, schema),
+         {:ok, validated} <- validate(opts, schema) do
+      {:ok, validated}
+    else
+      {:error, message} -> {:error, {:invalid_source_config, source_name, message}}
+    end
+  end
 
+  # YAML gives string keys and NimbleOptions wants atoms — but `String.to_atom/1` here
+  # would mint an atom for every key in a file the operator points us at, and atoms are
+  # never garbage collected. So keys are *looked up* against the schema instead of
+  # converted: a known key resolves to the atom the schema already defined, and an unknown
+  # one is reported here rather than created. Same "unknown options" message NimbleOptions
+  # would have produced, so the error reads identically either way.
+  defp to_opts(map, schema) do
+    known = Map.new(Keyword.keys(schema), &{Atom.to_string(&1), &1})
+
+    case Enum.reject(Map.keys(map), &Map.has_key?(known, &1)) do
+      [] ->
+        {:ok, Enum.map(map, fn {key, value} -> {Map.fetch!(known, key), value} end)}
+
+      unknown ->
+        {:error,
+         "unknown options #{inspect(Enum.sort(unknown))}, valid options are: " <>
+           inspect(Keyword.keys(schema))}
+    end
+  end
+
+  defp validate(opts, schema) do
     case NimbleOptions.validate(opts, schema) do
-      {:ok, validated} ->
-        {:ok, validated}
-
-      {:error, %NimbleOptions.ValidationError{} = e} ->
-        {:error, {:invalid_source_config, source_name, Exception.message(e)}}
+      {:ok, validated} -> {:ok, validated}
+      {:error, %NimbleOptions.ValidationError{} = e} -> {:error, Exception.message(e)}
     end
   end
 

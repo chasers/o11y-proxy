@@ -103,7 +103,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics.PromQLTest do
                  ])
 
         # exactly one label matcher was produced — a hostile value cannot forge a second
-        assert length(String.split(sel, "\",")) <= 2
+        assert Enum.count_until(String.split(sel, "\","), 3) <= 2
         assert String.starts_with?(sel, ~s(up{service="))
       end
     end

@@ -43,7 +43,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics.PromQL do
 
   defp build_matchers(filters) do
     with {:ok, clauses} <- matcher_clauses(filters) do
-      {:ok, "{" <> Enum.join(clauses, ",") <> "}"}
+      {:ok, IO.iodata_to_binary(["{", Enum.intersperse(clauses, ","), "}"])}
     end
   end
 

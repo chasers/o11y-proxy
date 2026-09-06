@@ -17,10 +17,10 @@ defmodule O11yProxy.Backends.Sentry.CursorTest do
 
   # Captured live, scrubbed: two comma-separated segments, previous then next.
   defp link_header(next_results) do
-    "<https://sentry.io/api/0/organizations/acme/issues/?project=checkout-api&limit=2&cursor=1788700125000:0:1>; " <>
-      "rel=\"previous\"; results=\"false\"; cursor=\"1788700125000:0:1\", " <>
-      "<https://sentry.io/api/0/organizations/acme/issues/?project=checkout-api&limit=2&cursor=#{@next_cursor}>; " <>
-      "rel=\"next\"; results=\"#{next_results}\"; cursor=\"#{@next_cursor}\""
+    ~s|<https://sentry.io/api/0/organizations/acme/issues/?project=checkout-api&limit=2&cursor=1788700125000:0:1>; | <>
+      ~s|rel="previous"; results="false"; cursor="1788700125000:0:1", | <>
+      ~s|<https://sentry.io/api/0/organizations/acme/issues/?project=checkout-api&limit=2&cursor=#{@next_cursor}>; | <>
+      ~s|rel="next"; results="#{next_results}"; cursor="#{@next_cursor}"|
   end
 
   setup do

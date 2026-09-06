@@ -104,26 +104,35 @@ defmodule O11yProxy.CLI do
   end
 
   defp standalone(command) do
-    with {:ok, config} <- load_config() do
-      case connect(config) do
-        {:ok, node} -> via_daemon(node, command, config)
-        {:fallback, reason} -> in_process(command, config, reason)
-      end
-    else
-      {:error, message} -> fail(message)
+    case load_config() do
+      {:ok, config} ->
+        case connect(config) do
+          {:ok, node} -> via_daemon(node, command, config)
+          {:fallback, reason} -> in_process(command, config, reason)
+        end
+
+      {:error, message} ->
+        fail(message)
     end
   end
 
   defp via_daemon(node, command, config) do
     request = request(command)
 
+    # The daemon was there a moment ago and isn't now, or the call blew up inside it.
+    # Falling back beats handing the user an Erlang term: the in-process path always
+    # produces the correct answer, just more slowly.
+    #
+    # Both clauses are needed. `:erpc.call/5` signals `{:erpc, :noconnection | :timeout |
+    # :badarg}` and a remote *raise* as `error:` — an ErlangError here — but a remote
+    # process that **exits** comes back as `exit:{:exception, reason}`, which no `rescue`
+    # clause ever sees. Catching only the first would have crashed the CLI on the second.
     try do
       :erpc.call(node, O11yProxy.Remote, :handle, [request], @call_timeout)
     rescue
-      # The daemon was there a moment ago and isn't now, or the call blew up inside it.
-      # Falling back beats handing the user an Erlang term: the in-process path always
-      # produces the correct answer, just more slowly.
-      error -> {:fallback, {:call_failed, Exception.message(error)}}
+      error in [ErlangError] -> {:fallback, {:call_failed, Exception.message(error)}}
+    catch
+      :exit, reason -> {:fallback, {:call_failed, inspect(reason)}}
     end
     |> case do
       {:fallback, reason} -> in_process(command, config, reason)
@@ -207,7 +216,12 @@ defmodule O11yProxy.CLI do
       theirs -> {:fallback, {:protocol_mismatch, ours, theirs}}
     end
   rescue
-    _ -> {:fallback, {:protocol_unknown, O11yProxy.Remote.protocol_version()}}
+    # An undefined protocol_version/0 — a daemon predating the CLI — is an ErlangError
+    # carrying `{:exception, %UndefinedFunctionError{}}`. See via_daemon/3 on why the
+    # exit clause is not optional.
+    ErlangError -> {:fallback, {:protocol_unknown, O11yProxy.Remote.protocol_version()}}
+  catch
+    :exit, _reason -> {:fallback, {:protocol_unknown, O11yProxy.Remote.protocol_version()}}
   end
 
   # Nothing in the output reveals that a command paid a cold BEAM start plus fresh

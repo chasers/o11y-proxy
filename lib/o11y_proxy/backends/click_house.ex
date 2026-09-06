@@ -134,15 +134,17 @@ defmodule O11yProxy.Backends.ClickHouse do
   end
 
   defp sample_values(state, native) do
-    if native in state.low_cardinality do
-      sql = "SELECT DISTINCT #{native} FROM #{state.table_path} LIMIT 20"
+    if native in state.low_cardinality,
+      do: distinct_values(state, native),
+      else: []
+  end
 
-      case run(state, sql, %{}) do
-        {:ok, %Ch.Result{rows: rows}} -> Enum.map(rows, fn [v] -> v end)
-        {:error, _} -> []
-      end
-    else
-      []
+  defp distinct_values(state, native) do
+    sql = "SELECT DISTINCT #{native} FROM #{state.table_path} LIMIT 20"
+
+    case run(state, sql, %{}) do
+      {:ok, %Ch.Result{rows: rows}} -> Enum.map(rows, fn [v] -> v end)
+      {:error, _} -> []
     end
   end
 
@@ -156,18 +158,16 @@ defmodule O11yProxy.Backends.ClickHouse do
   end
 
   defp compile_raw(state, query) do
-    cond do
-      not state.allow_raw ->
-        {:error, {:raw_not_allowed, "this source does not set allow_raw: true"}}
+    if state.allow_raw do
+      case SQL.validate_single_select(query.raw) do
+        :ok ->
+          {:ok, %{sql: query.raw, params: %{}, kind: :raw, limit: query.limit, paginate: false}}
 
-      true ->
-        case SQL.validate_single_select(query.raw) do
-          :ok ->
-            {:ok, %{sql: query.raw, params: %{}, kind: :raw, limit: query.limit, paginate: false}}
-
-          error ->
-            error
-        end
+        error ->
+          error
+      end
+    else
+      {:error, {:raw_not_allowed, "this source does not set allow_raw: true"}}
     end
   end
 
@@ -305,20 +305,20 @@ defmodule O11yProxy.Backends.ClickHouse do
   # OTel SeverityText is free-form; SeverityNumber follows the OTel spec's 1-24 range.
   # Unknown/missing values normalize to :info rather than raising — a malformed severity
   # column must never turn into a 500 on an otherwise-good log line.
-  defp normalize_severity(sev) when is_binary(sev) do
-    case String.downcase(sev) do
-      "trace" -> :trace
-      "debug" -> :debug
-      "info" -> :info
-      "information" -> :info
-      "warn" -> :warn
-      "warning" -> :warn
-      "error" -> :error
-      "fatal" -> :fatal
-      "critical" -> :fatal
-      _ -> :info
-    end
-  end
+  @severity_names %{
+    "trace" => :trace,
+    "debug" => :debug,
+    "info" => :info,
+    "information" => :info,
+    "warn" => :warn,
+    "warning" => :warn,
+    "error" => :error,
+    "fatal" => :fatal,
+    "critical" => :fatal
+  }
+
+  defp normalize_severity(sev) when is_binary(sev),
+    do: Map.get(@severity_names, String.downcase(sev), :info)
 
   defp normalize_severity(sev) when is_integer(sev) do
     cond do

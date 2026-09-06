@@ -122,7 +122,7 @@ defmodule O11yProxy.Backends.ClickHouse.SQL do
     1800,
     3600,
     7200,
-    14400,
+    14_400,
     21_600,
     43_200,
     86_400

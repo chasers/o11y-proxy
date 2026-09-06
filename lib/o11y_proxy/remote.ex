@@ -168,7 +168,8 @@ defmodule O11yProxy.Remote do
     invalid_query("sources is required in Phase 2 (no fan-out yet) — name exactly one source")
   end
 
-  defp run_query(%{sources: sources}) when length(sources) != 1 do
+  # Matches [] and [_, _ | _] alike: anything that is not exactly one source.
+  defp run_query(%{sources: _}) do
     {:error,
      %{
        error: "unsupported",

@@ -1,0 +1,76 @@
+{
+  "version": 2,
+  "tool": "reach",
+  "findings": [
+    {
+      "source": "smells",
+      "kind": "behaviour_candidate",
+      "fingerprint": "sha256:c278aa26da577590dcb06e3eb3cbd42a734759add52b05179e51a06710969bdf",
+      "message": "3 modules expose the same 7 public callbacks; consider extracting a behaviour if these modules are interchangeable implementations",
+      "file": "lib/o11y_proxy/backends/click_house.ex",
+      "line": 1
+    },
+    {
+      "source": "smells",
+      "kind": "fixed_shape_map",
+      "fingerprint": "sha256:853f6ea1f4bb9ab6030de11263f9094766b2cfe4002de80360d79c7139ed3e5f",
+      "message": "map shape [:max_window_ms, :modes, :operators, :raw, :signals] appears 5 times; consider a struct or explicit contract if it is domain data",
+      "file": "lib/o11y_proxy/backends/click_house.ex",
+      "line": 97
+    },
+    {
+      "source": "smells",
+      "kind": "fixed_shape_map",
+      "fingerprint": "sha256:0d8ba7666c493b9656d54eb7233d35713ab77afe0d666054625672f3e8627c29",
+      "message": "map shape [:canonical, :cardinality, :filterable, :native, :sample_values, :type] appears 5 times; consider a struct or explicit contract if it is domain data",
+      "file": "lib/o11y_proxy/backends/click_house.ex",
+      "line": 119
+    },
+    {
+      "source": "smells",
+      "kind": "fixed_shape_map",
+      "fingerprint": "sha256:28bacd3fd7ce54a8e25e59a21df333e24501e07ff30c4fc8b397ee717727f31c",
+      "message": "map shape [:native, :records, :total] appears 6 times; consider a struct or explicit contract if it is domain data",
+      "file": "lib/o11y_proxy/backends/click_house.ex",
+      "line": 235
+    },
+    {
+      "source": "smells",
+      "kind": "fixed_shape_map",
+      "fingerprint": "sha256:985111c406b5c9ac8d73e5d307eaab763251a981e5bac2c29231aab04d354360",
+      "message": "map shape [:cursor, :elapsed_ms, :native_queries, :returned, :sources_queried, :total_matched, :truncated] appears 3 times; consider a struct or explicit contract if it is domain data",
+      "file": "lib/o11y_proxy/context.ex",
+      "line": 400
+    },
+    {
+      "source": "smells",
+      "kind": "fixed_shape_map",
+      "fingerprint": "sha256:9b195a4ccd6dd803947f25a839beb3dfb9e0fe4eaced090349404abac4e83b12",
+      "message": "map shape [:code, :message, :retry_after_ms] appears 12 times; consider a struct or explicit contract if it is domain data",
+      "file": "lib/o11y_proxy/response_error.ex",
+      "line": 21
+    }
+  ],
+  "scopes": {
+    "arch": {
+      "mix_env": "test",
+      "source": "mix",
+      "source_roots": [
+        "lib",
+        "src",
+        "test/support"
+      ],
+      "file_count": 35
+    },
+    "smells": {
+      "mix_env": "test",
+      "source": "mix",
+      "source_roots": [
+        "lib",
+        "src",
+        "test/support"
+      ],
+      "file_count": 35
+    }
+  }
+}
