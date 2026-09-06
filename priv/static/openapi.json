@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "o11y-proxy",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "description": "One HTTP+JSON interface over Sentry, ClickHouse, and VictoriaMetrics for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies."
   },
   "servers": [
