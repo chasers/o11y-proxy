@@ -8,8 +8,8 @@ defmodule O11yProxy.Backends.Sentry do
   (`GET /organizations/{org}/issues/`) returns a flat list of issue *groups* — one row
   per distinct error, not per event, and not time-bucketed. There is no live-verified
   path yet to the time-bucketed aggregate `summary` mode promises; building that on an
-  unverified guess about Sentry's
-  per-issue stats-sparkline shape would repeat exactly the mistake the Phase 4 spike was
+  unverified guess about Sentry's per-issue stats-sparkline shape would repeat exactly
+  the mistake the Phase 4 spike was
   meant to avoid. Revisit once that shape gets its own spike.
 
   **`trace_id` costs one extra request per issue.** The issue-list response has no
@@ -354,8 +354,8 @@ defmodule O11yProxy.Backends.Sentry do
 
   # Sentry's general API docs don't confirm a `Retry-After` header exists on a 429 (only
   # the separate event-ingest endpoint's docs mention one). Prefer it if present, since
-  # it's the most direct
-  # signal; fall back to `X-Sentry-Rate-Limit-Reset` (confirmed present on every response,
+  # it's the most direct signal; fall back to `X-Sentry-Rate-Limit-Reset` (confirmed
+  # present on every response,
   # live-verified), which is a unix-seconds window-reset time, not a wait duration, so it
   # still needs converting to a relative offset from now.
   @doc false

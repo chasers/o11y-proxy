@@ -2,10 +2,14 @@
   "openapi": "3.1.0",
   "info": {
     "title": "o11y-proxy",
-    "version": "0.1.0-design",
-    "description": "One HTTP+JSON interface over Sentry, ClickHouse, and VictoriaMetrics for logs, metrics, traces and errors. Design-stage spec (Phase 0) — no adapters implemented yet; served by a canned stub server for agent-contract validation."
+    "version": "0.2.0",
+    "description": "One HTTP+JSON interface over Sentry, ClickHouse, and VictoriaMetrics for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies."
   },
-  "servers": [{ "url": "http://127.0.0.1:4000" }],
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4000"
+    }
+  ],
   "paths": {
     "/v1/sources": {
       "get": {
@@ -16,7 +20,9 @@
             "description": "Configured sources",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SourcesResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SourcesResponse"
+                }
               }
             }
           }
@@ -32,7 +38,9 @@
             "name": "name",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -40,7 +48,9 @@
             "description": "Source schema",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SourceSchema" }
+                "schema": {
+                  "$ref": "#/components/schemas/SourceSchema"
+                }
               }
             }
           },
@@ -48,7 +58,9 @@
             "description": "No such source",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorBody" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
               }
             }
           }
@@ -64,7 +76,9 @@
             "description": "Health status per configured source",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
               }
             }
           }
@@ -76,7 +90,9 @@
         "summary": "This spec",
         "operationId": "getOpenApiSpec",
         "responses": {
-          "200": { "description": "The OpenAPI document" }
+          "200": {
+            "description": "The OpenAPI document"
+          }
         }
       }
     },
@@ -88,7 +104,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/QueryRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
             }
           }
         },
@@ -97,7 +115,9 @@
             "description": "Always 200. Partial failure is a peer field, not a status code.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ResponseEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEnvelope"
+                }
               }
             }
           },
@@ -105,7 +125,9 @@
             "description": "Request failed validation (e.g. unsupported operator, raw query without allow_raw)",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorBody" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
               }
             }
           }
@@ -120,7 +142,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ContextRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ContextRequest"
+              }
             }
           }
         },
@@ -129,7 +153,27 @@
             "description": "Correlation bundle",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ContextResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ContextResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus exposition of this proxy's own metrics",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition format",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -141,27 +185,61 @@
     "schemas": {
       "Signal": {
         "type": "string",
-        "enum": ["logs", "metrics", "traces", "errors"]
+        "enum": [
+          "logs",
+          "metrics",
+          "traces",
+          "errors"
+        ]
       },
       "Mode": {
         "type": "string",
-        "enum": ["summary", "sample", "full"],
+        "enum": [
+          "summary",
+          "sample",
+          "full"
+        ],
         "description": "summary (default): time-bucketed aggregates only, no raw records. sample: summary plus N representative records spread across the window. full: raw records, cursor-paginated."
       },
       "Operator": {
         "type": "string",
-        "enum": ["eq", "neq", "gte", "lte", "contains", "regex", "in", "exists"]
+        "enum": [
+          "eq",
+          "neq",
+          "gte",
+          "lte",
+          "contains",
+          "regex",
+          "in",
+          "exists"
+        ]
       },
       "Severity": {
         "type": "string",
-        "enum": ["trace", "debug", "info", "warn", "error", "fatal"]
+        "enum": [
+          "trace",
+          "debug",
+          "info",
+          "warn",
+          "error",
+          "fatal"
+        ]
       },
       "Filter": {
         "type": "object",
-        "required": ["field", "op", "value"],
+        "required": [
+          "field",
+          "op",
+          "value"
+        ],
         "properties": {
-          "field": { "type": "string", "description": "Canonical field name, e.g. severity, service, body, attributes.<key>" },
-          "op": { "$ref": "#/components/schemas/Operator" },
+          "field": {
+            "type": "string",
+            "description": "Canonical field name, e.g. severity, service, body, attributes.<key>"
+          },
+          "op": {
+            "$ref": "#/components/schemas/Operator"
+          },
           "value": {}
         }
       },
@@ -169,166 +247,409 @@
         "type": "object",
         "description": "Canonical shape for logs/traces/errors, loosely following OpenTelemetry semantic conventions. Unmapped native fields land in attributes.",
         "properties": {
-          "timestamp": { "type": "string", "format": "date-time", "description": "RFC3339 UTC, always present" },
-          "severity": { "$ref": "#/components/schemas/Severity" },
-          "body": { "type": "string", "description": "log message or error title" },
-          "service": { "type": "string" },
-          "trace_id": { "type": ["string", "null"], "description": "the join key across every backend" },
-          "span_id": { "type": ["string", "null"] },
-          "attributes": { "type": "object", "description": "flat map, backend-native keys preserved" },
-          "source": { "type": "string", "description": "which configured source produced this" }
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 UTC, always present"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "body": {
+            "type": "string",
+            "description": "log message or error title"
+          },
+          "service": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "the join key across every backend"
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attributes": {
+            "type": "object",
+            "description": "flat map, backend-native keys preserved"
+          },
+          "source": {
+            "type": "string",
+            "description": "which configured source produced this"
+          }
         },
-        "required": ["timestamp", "severity", "body", "service", "attributes", "source"]
+        "required": [
+          "timestamp",
+          "severity",
+          "body",
+          "service",
+          "attributes",
+          "source"
+        ]
       },
       "MetricSeries": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+          "name": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "points": {
             "type": "array",
             "items": {
               "type": "array",
               "prefixItems": [
-                { "type": "integer", "description": "unix_ms" },
-                { "type": "number" }
+                {
+                  "type": "integer",
+                  "description": "unix_ms"
+                },
+                {
+                  "type": "number"
+                }
               ]
             }
           }
         },
-        "required": ["name", "labels", "points"]
+        "required": [
+          "name",
+          "labels",
+          "points"
+        ]
       },
       "QueryRequest": {
         "type": "object",
-        "required": ["signal", "from", "to"],
+        "required": [
+          "sources",
+          "signal",
+          "from",
+          "to"
+        ],
         "properties": {
           "sources": {
             "type": "array",
-            "items": { "type": "string" },
-            "description": "Omit to query every source that supports the signal"
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 1,
+            "description": "Exactly one source name. Querying several at once is not supported: there is no merge/rank across sources yet. Use POST /v1/context to reach every configured source in one call, or issue one query per source."
           },
-          "signal": { "$ref": "#/components/schemas/Signal" },
-          "from": { "type": "string", "description": "RFC3339 or relative, e.g. now-15m" },
-          "to": { "type": "string", "description": "RFC3339 or relative, e.g. now" },
+          "signal": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "from": {
+            "type": "string",
+            "description": "RFC3339 or relative, e.g. now-15m"
+          },
+          "to": {
+            "type": "string",
+            "description": "RFC3339 or relative, e.g. now"
+          },
           "filters": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/Filter" }
+            "items": {
+              "$ref": "#/components/schemas/Filter"
+            }
           },
           "raw": {
             "type": "string",
             "description": "Native query, per-source escape hatch. Replaces filters. Only permitted where the source config sets allow_raw: true."
           },
-          "mode": { "$ref": "#/components/schemas/Mode", "default": "summary" },
-          "limit": { "type": "integer", "default": 50 },
-          "order": { "type": "string", "enum": ["asc", "desc"], "default": "desc" },
-          "cursor": { "type": ["string", "null"], "default": null }
+          "mode": {
+            "$ref": "#/components/schemas/Mode",
+            "default": "summary"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "desc"
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
         }
       },
       "ContextRequest": {
         "type": "object",
         "description": "Exactly one of trace_id, error_id, or {from,to,service} identifies the entity to correlate.",
         "properties": {
-          "trace_id": { "type": "string" },
-          "error_id": { "type": "string" },
-          "from": { "type": "string" },
-          "to": { "type": "string" },
-          "service": { "type": "string" }
+          "trace_id": {
+            "type": "string"
+          },
+          "error_id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          }
         }
       },
       "ResponseError": {
         "type": "object",
-        "required": ["source", "code", "message"],
+        "required": [
+          "source",
+          "code",
+          "message"
+        ],
         "properties": {
-          "source": { "type": "string" },
-          "code": { "type": "string", "enum": ["rate_limited", "timeout", "unreachable", "invalid_query", "unsupported_operator", "internal"] },
-          "message": { "type": "string" },
-          "retry_after_ms": { "type": "integer" }
+          "source": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "rate_limited",
+              "timeout",
+              "unreachable",
+              "invalid_query",
+              "unsupported_operator",
+              "internal"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "type": "integer"
+          }
         }
       },
       "ResponseMeta": {
         "type": "object",
         "properties": {
-          "sources_queried": { "type": "array", "items": { "type": "string" } },
-          "elapsed_ms": { "type": "integer" },
-          "truncated": { "type": "boolean" },
-          "total_matched": { "type": "integer" },
-          "returned": { "type": "integer" },
-          "cursor": { "type": ["string", "null"] },
-          "native_queries": { "type": "object", "additionalProperties": { "type": "string" } }
+          "sources_queried": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "elapsed_ms": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "total_matched": {
+            "type": "integer"
+          },
+          "returned": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "native_queries": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
         }
       },
       "ResponseEnvelope": {
         "type": "object",
-        "required": ["data", "meta", "errors"],
+        "required": [
+          "data",
+          "meta",
+          "errors"
+        ],
         "properties": {
           "data": {
             "type": "array",
             "items": {
               "oneOf": [
-                { "$ref": "#/components/schemas/CanonicalRecord" },
-                { "$ref": "#/components/schemas/MetricSeries" },
-                { "type": "object", "description": "summary bucket: {bucket, severity, service, count, ...group-by fields}" }
+                {
+                  "$ref": "#/components/schemas/CanonicalRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/MetricSeries"
+                },
+                {
+                  "type": "object",
+                  "description": "summary bucket: {bucket, severity, service, count, ...group-by fields}"
+                }
               ]
             }
           },
-          "meta": { "$ref": "#/components/schemas/ResponseMeta" },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          },
           "errors": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/ResponseError" }
+            "items": {
+              "$ref": "#/components/schemas/ResponseError"
+            }
           }
         }
       },
       "ContextResponse": {
         "type": "object",
         "properties": {
-          "trace": { "type": "array", "items": { "$ref": "#/components/schemas/CanonicalRecord" } },
-          "logs": { "type": "array", "items": { "$ref": "#/components/schemas/CanonicalRecord" } },
-          "error": { "type": ["object", "null"] },
-          "metrics": { "type": "array", "items": { "$ref": "#/components/schemas/MetricSeries" } },
-          "meta": { "$ref": "#/components/schemas/ResponseMeta" },
-          "errors": { "type": "array", "items": { "$ref": "#/components/schemas/ResponseError" } }
+          "trace": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CanonicalRecord"
+            }
+          },
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CanonicalRecord"
+            }
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "metrics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricSeries"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ResponseMeta"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponseError"
+            }
+          }
         }
       },
       "SourceCapabilities": {
         "type": "object",
         "properties": {
-          "signals": { "type": "array", "items": { "$ref": "#/components/schemas/Signal" } },
-          "operators": { "type": "array", "items": { "$ref": "#/components/schemas/Operator" } },
-          "modes": { "type": "array", "items": { "$ref": "#/components/schemas/Mode" } },
-          "raw": { "type": "boolean" },
-          "max_window": { "type": "string", "description": "e.g. 7d, or 'infinity'" }
+          "signals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Signal"
+            }
+          },
+          "operators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Operator"
+            }
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mode"
+            }
+          },
+          "raw": {
+            "type": "boolean"
+          },
+          "max_window": {
+            "type": "string",
+            "description": "e.g. 7d, or 'infinity'"
+          }
         }
       },
       "Source": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "backend": { "type": "string", "enum": ["clickhouse", "victoriametrics", "sentry", "logflare"] },
-          "signal": { "$ref": "#/components/schemas/Signal" },
-          "capabilities": { "$ref": "#/components/schemas/SourceCapabilities" }
+          "name": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "clickhouse",
+              "victoriametrics",
+              "sentry",
+              "logflare"
+            ]
+          },
+          "signal": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/SourceCapabilities"
+          }
         }
       },
       "SourcesResponse": {
         "type": "object",
         "properties": {
-          "sources": { "type": "array", "items": { "$ref": "#/components/schemas/Source" } }
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            }
+          }
         }
       },
       "SourceSchema": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
+          "name": {
+            "type": "string"
+          },
           "fields": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "canonical": { "type": "string" },
-                "native": { "type": "string" },
-                "type": { "type": "string" },
-                "filterable": { "type": "boolean" },
-                "cardinality": { "type": "string", "enum": ["low", "high", "unknown"] },
-                "sample_values": { "type": "array", "items": {} }
+                "canonical": {
+                  "type": "string"
+                },
+                "native": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "filterable": {
+                  "type": "boolean"
+                },
+                "cardinality": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "high",
+                    "unknown"
+                  ]
+                },
+                "sample_values": {
+                  "type": "array",
+                  "items": {}
+                }
               }
             }
           }
@@ -342,8 +663,16 @@
             "additionalProperties": {
               "type": "object",
               "properties": {
-                "status": { "type": "string", "enum": ["ok", "error"] },
-                "message": { "type": "string" }
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -352,8 +681,12 @@
       "ErrorBody": {
         "type": "object",
         "properties": {
-          "error": { "type": "string" },
-          "message": { "type": "string" }
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
         }
       }
     }

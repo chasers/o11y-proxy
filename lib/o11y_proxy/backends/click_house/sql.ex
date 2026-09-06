@@ -168,8 +168,8 @@ defmodule O11yProxy.Backends.ClickHouse.SQL do
   @doc """
   Keyset-pagination WHERE fragment for `mode: full`'s cursor continuation — single-field
   on `timestamp` (`ts < {cursor:...}` for `DESC`, `>` for `ASC`), per the cursor
-  design. A `nil` cursor yields no extra clause/param. Decode
-  failures (garbage, or a cursor minted by a different backend) surface as
+  design. A `nil` cursor yields no extra clause/param. Decode failures (garbage, or a
+  cursor minted by a different backend) surface as
   `{:invalid_cursor, cursor}` rather than silently ignored or spliced raw.
 
   Known limitation, documented rather than hidden: this is a single-column key, so ties

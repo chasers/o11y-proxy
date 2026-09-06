@@ -68,8 +68,8 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   @impl true
   def schema(state) do
     with {:ok, %{"data" => label_names}} <- get_json(state, "/api/v1/labels", %{}) do
-      # Genuinely cheap, but still bounded — a VM instance can
-      # have hundreds of label names, and we're not fetching one distinct-values call per.
+      # Genuinely cheap, but still bounded — a VM instance can have hundreds of label
+      # names, and we're not fetching one distinct-values call per.
       fields =
         label_names
         |> Enum.reject(&(&1 == "__name__"))

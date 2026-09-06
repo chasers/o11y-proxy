@@ -21,8 +21,8 @@ defmodule O11yProxy.Application do
 
   @doc """
   Starts the core supervision tree *without* Bandit, plus the given sources — the CLI's
-  in-process path. No port is bound, both because a one-shot command
-  needs none and because binding one would collide with a running daemon.
+  in-process path. No port is bound, both because a one-shot command needs none and
+  because binding one would collide with a running daemon.
   """
   @spec start_core(O11yProxy.Config.t(), [O11yProxy.Config.Source.t()]) ::
           :ok | {:error, String.t()}

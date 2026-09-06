@@ -1,8 +1,8 @@
 defmodule O11yProxy.Cursor do
   @moduledoc """
   Opaque pagination cursors — "opaque cursors, no offset math in the agent".
-  Every adapter's native pagination token (a ClickHouse
-  timestamp bound, a raw Sentry `Link`-header cursor, ...) gets wrapped with the backend
+  Every adapter's native pagination token (a ClickHouse timestamp bound, a raw Sentry
+  `Link`-header cursor, ...) gets wrapped with the backend
   name that produced it before being handed to the caller, so:
 
     * decoding never needs `:erlang.binary_to_term` on caller-supplied input — that's an

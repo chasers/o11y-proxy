@@ -49,8 +49,8 @@ defmodule O11yProxy.Backend do
 
   The result map may also carry a `:cursor` key — an opaque token (see
   `O11yProxy.Cursor`) for the next page, present only when there's more data and the
-  adapter supports pagination. Absent (the default for
-  any adapter that doesn't set it) means "no more pages" / "pagination not supported" —
+  adapter supports pagination. Absent (the default for any adapter that doesn't set it)
+  means "no more pages" / "pagination not supported" —
   callers must not distinguish the two.
   """
   @callback execute(state(), native :: term()) ::
