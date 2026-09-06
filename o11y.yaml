@@ -13,9 +13,9 @@ defaults:
   max_window: 7d
   timeout: 30s
 
-# No sources yet — Phase 1 is the skeleton (see .plans/05-roadmap.md); adapters land in
-# Phase 2 (ClickHouse), Phase 3 (VictoriaMetrics), Phase 4 (Sentry). Once an adapter
-# exists, a source block looks like this (from .plans/02-backend-behaviour.md):
+# No sources configured — ClickHouse, VictoriaMetrics, and Sentry adapters all exist now
+# (see .plans/05-roadmap.md, Phases 2-4); this file just doesn't point at any real
+# instances. A source block looks like this (from .plans/02-backend-behaviour.md):
 #
 # sources:
 #   - name: app_logs
@@ -38,4 +38,18 @@ defaults:
 #     hints:
 #       partition_key: Timestamp
 #       low_cardinality: [ServiceName, SeverityText]
+#
+#   - name: prod_errors
+#     backend: sentry
+#     signal: errors
+#     org: ${SENTRY_ORG}
+#     project: ${SENTRY_PROJECT}
+#     token: ${SENTRY_AUTH_TOKEN}   # needs org:read or broader — see .plans/03-adapters.md
+#     allow_raw: true
+#
+#   - name: prod_metrics
+#     backend: victoriametrics
+#     signal: metrics
+#     url: ${VM_URL}
+#     allow_raw: true
 sources: []

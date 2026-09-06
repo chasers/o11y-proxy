@@ -69,6 +69,17 @@ defmodule O11yProxy.BackendCase do
         raise "#{inspect(__MODULE__)}: :queries fixture must not be empty"
       end
 
+      # Mirrors what O11yProxy.Config actually does before calling init/1 in production
+      # (validate, then use the *validated* opts — defaults included). Calling init/1
+      # directly on the raw @valid_config fixture would KeyError on any field that only
+      # has a default and isn't spelled out in the fixture; every test below needs the
+      # validated state, not the raw fixture.
+      defp init_state do
+        {:ok, validated} = NimbleOptions.validate(@valid_config, @backend.config_schema())
+        {:ok, state} = @backend.init(Map.new(validated))
+        state
+      end
+
       test "config_schema/0 accepts the valid fixture config" do
         assert {:ok, _} = NimbleOptions.validate(@valid_config, @backend.config_schema())
       end
@@ -79,7 +90,7 @@ defmodule O11yProxy.BackendCase do
       end
 
       test "capabilities/1 declares only signals/operators/modes O11yProxy.Query itself knows about" do
-        {:ok, state} = @backend.init(Map.new(@valid_config))
+        state = init_state()
         caps = @backend.capabilities(state)
 
         assert Enum.all?(caps.signals, &(&1 in O11yProxy.Query.signals()))
@@ -89,7 +100,7 @@ defmodule O11yProxy.BackendCase do
       end
 
       test "compile/2 emits a time bound for every query, always" do
-        {:ok, state} = @backend.init(Map.new(@valid_config))
+        state = init_state()
         time_bound? = unquote(time_bound)
 
         for query <- @queries do
@@ -101,7 +112,7 @@ defmodule O11yProxy.BackendCase do
       end
 
       test "compile/2 emits a limit for every non-summary query" do
-        {:ok, state} = @backend.init(Map.new(@valid_config))
+        state = init_state()
         limit_present? = unquote(limit_present)
 
         for query <- @queries, query.mode != :summary do
@@ -113,7 +124,7 @@ defmodule O11yProxy.BackendCase do
       end
 
       test "compile/2 rejects an unsupported operator instead of silently dropping it" do
-        {:ok, state} = @backend.init(Map.new(@valid_config))
+        state = init_state()
         caps = @backend.capabilities(state)
         unsupported = O11yProxy.Query.Filter.operators() -- caps.operators
 
@@ -134,7 +145,7 @@ defmodule O11yProxy.BackendCase do
       end
 
       test "compile/2 is injection-safe against a corpus of hostile filter values" do
-        {:ok, state} = @backend.init(Map.new(@valid_config))
+        state = init_state()
         base = hd(@queries)
         value_isolated? = unquote(value_isolated)
 
@@ -166,7 +177,7 @@ defmodule O11yProxy.BackendCase do
         # only checks a :sample/:full query if the fixture has one. Metrics never return
         # canonical records at all (always {name, labels, points} MetricSeries) — skip
         # the shape check for that signal but still validate the envelope generically.
-        {:ok, state} = @backend.init(Map.new(@valid_config))
+        state = init_state()
         query = Enum.find(@queries, &(&1.mode != :summary)) || hd(@queries)
         {:ok, native} = @backend.compile(state, query)
 

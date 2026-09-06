@@ -4,13 +4,20 @@ An agent-friendly observability proxy in Elixir. One HTTP+JSON interface over Se
 ClickHouse, and VictoriaMetrics (Logflare/BigQuery deferred), so an agent can debug
 production without learning three query dialects.
 
-Status: early design/planning stage — no implementation yet.
+Status: ClickHouse, VictoriaMetrics, and Sentry adapters implemented and passing their
+contract tests (Phases 0-4, see `.plans/05-roadmap.md`) — `/v1/query` is live for a single
+source at a time. Cross-backend correlation (`/v1/context`, shown below) is still
+aspirational; fan-out lands in Phase 5.
 
 ## Example queries
 
 Pseudo-requests against the canonical query API, one per v1 backend.
 
 ### ClickHouse logs — summary
+
+Schema matches ClickStack's real `otel_logs` table (verified against
+[ClickHouse's docs](https://clickhouse.com/docs/clickstack/ingesting-data/schemas#logs),
+2026-09-06) — table name and columns below, not just an OTel-standard guess.
 
 ```json
 POST /v1/query
@@ -60,7 +67,11 @@ POST /v1/query
 Same adapter as `app_logs`, different source config (`otel_traces` table, its own field
 mapping).
 
-### Sentry errors — summary
+### Sentry errors — full
+
+Only `mode: full` is implemented — Sentry's issue-search API is a flat list of issue
+groups, not time-bucketed, so `summary`/`sample` aren't faked on top of it (see
+`.plans/03-adapters.md`).
 
 ```json
 POST /v1/query
@@ -72,14 +83,15 @@ POST /v1/query
     {"field": "severity", "op": "eq", "value": "error"},
     {"field": "body", "op": "contains", "value": "timeout"}
   ],
-  "mode": "summary",
+  "mode": "full",
   "limit": 50
 }
 ```
 
-Native (`prod_errors`):
+Native (`prod_errors`), the real org-scoped endpoint (live-verified 2026-09-06 —
+the project-scoped one is deprecated):
 ```
-GET /api/0/projects/my-org/my-project/issues/?query=is:unresolved level:error timeout&statsPeriod=24h
+GET /api/0/organizations/my-org/issues/?project=my-project&query=level:"error" "timeout"&start=...&end=...&limit=50
 ```
 
 ### VictoriaMetrics — structured and raw

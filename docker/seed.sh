@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# Creates otel_test.otel_logs / otel_test.otel_traces (a minimal OTel-shaped schema, per
-# .plans/03-adapters.md) and seeds a handful of rows anchored on "now" so the ClickHouse
-# BackendCase test (test/o11y_proxy/backends/click_house_test.exs, `mix test --include
-# clickhouse`) finds them inside its +/-1h window. Requires `docker compose up -d`
-# first (see docker-compose.yml).
+# Creates otel_test.otel_logs / otel_test.otel_traces and seeds a handful of rows
+# anchored on "now" so the ClickHouse BackendCase test
+# (test/o11y_proxy/backends/click_house_test.exs, `mix test --include clickhouse`) finds
+# them inside its +/-1h window. Requires `docker compose up -d` first (see
+# docker-compose.yml).
+#
+# otel_logs matches ClickStack's real schema (verified against
+# https://clickhouse.com/docs/clickstack/ingesting-data/schemas#logs, 2026-09-06) —
+# table name and all seven core columns below line up exactly. ClickStack's actual table
+# also carries ResourceAttributes/ScopeAttributes/ScopeName/etc.; omitted here since this
+# adapter's `attributes` mapping targets one map column (log-record-level LogAttributes),
+# not resource/scope-level metadata.
 set -euo pipefail
 
 CH_URL="${CH_URL:-http://localhost:8123}"

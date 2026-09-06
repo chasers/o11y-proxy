@@ -104,14 +104,7 @@ defmodule O11yProxy.Router do
 
       {:error, reason} ->
         elapsed = System.monotonic_time(:millisecond) - started
-
-        error = %{
-          source: name,
-          code: "query_failed",
-          message: inspect(reason),
-          retry_after_ms: nil
-        }
-
+        error = error_for(name, reason)
         empty = %{records: [], native: "", total: 0}
         send_json(conn, 200, envelope(name, empty, elapsed, [error]))
     end
@@ -131,6 +124,17 @@ defmodule O11yProxy.Router do
         "Phase 2 supports exactly one source in `sources` — fan-out across multiple " <>
           "sources lands in Phase 5 (.plans/05-roadmap.md)"
     })
+  end
+
+  # `{:rate_limited, retry_after_ms}` is the shape an adapter (currently only Sentry)
+  # returns when it hits a 429 — see `.plans/01-agent-contract.md`'s envelope example.
+  # Every other adapter error stays a generic `query_failed` with no retry hint.
+  defp error_for(name, {:rate_limited, retry_after_ms}) do
+    %{source: name, code: "rate_limited", message: "rate limited", retry_after_ms: retry_after_ms}
+  end
+
+  defp error_for(name, reason) do
+    %{source: name, code: "query_failed", message: inspect(reason), retry_after_ms: nil}
   end
 
   defp envelope(name, result, elapsed_ms, errors) do
