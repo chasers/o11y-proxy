@@ -59,6 +59,10 @@ o11y-proxy health
 
 A bare `o11y-proxy` (or `o11y-proxy serve`) is still the server it always was.
 
+If you point a coding agent at this, `examples/skills/o11y/` is a ready-to-copy skill that
+teaches it the investigative loop rather than just the flags — see
+[`examples/skills/README.md`](examples/skills/README.md).
+
 The commands mirror the HTTP API rather than inventing a second vocabulary, and both go
 through the same core: `o11y-proxy query ...` and `POST /v1/query` produce the same body,
 byte for byte, including redaction and byte-ceiling truncation.
