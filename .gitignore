@@ -35,3 +35,6 @@ o11y_proxy-*.tar
 # Internal design/planning docs and local skills — not part of the public repo.
 .plans/
 .claude/
+
+# Dialyzer PLTs — big, machine-specific, and cached in CI rather than committed.
+/priv/plts/
