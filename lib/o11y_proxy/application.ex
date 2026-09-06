@@ -22,11 +22,34 @@ defmodule O11yProxy.Application do
 
     opts = [strategy: :one_for_one, name: O11yProxy.Supervisor]
 
-    with {:ok, pid} <- Supervisor.start_link(children, opts) do
-      O11yProxy.Sources.start_all(config.sources)
-      Logger.info("o11y-proxy listening on http://127.0.0.1:#{config.server.port}")
-      keep_alive_if_release()
-      {:ok, pid}
+    case Supervisor.start_link(children, opts) do
+      {:ok, pid} ->
+        O11yProxy.Sources.start_all(config.sources)
+        Logger.info("o11y-proxy listening on http://127.0.0.1:#{config.server.port}")
+        keep_alive_if_release()
+        {:ok, pid}
+
+      # Running it twice is an ordinary mistake and deserves an ordinary message, not the
+      # same wall of Erlang term dump a config error used to produce.
+      {:error, {:shutdown, {:failed_to_start_child, Bandit, _}}} ->
+        IO.puts(
+          :stderr,
+          """
+          o11y-proxy: port #{config.server.port} is already in use.
+
+          Something else is listening there — most likely another o11y-proxy. Stop it, or
+          set a different port in your config:
+
+            server:
+              port: 4001
+          """
+        )
+
+        System.halt(1)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "o11y-proxy: failed to start: #{inspect(reason)}")
+        System.halt(1)
     end
   end
 
@@ -47,10 +70,20 @@ defmodule O11yProxy.Application do
   # once on that startup path. SIGTERM and `:init.stop/0` don't go through them, so
   # ordinary OTP shutdown still stops the supervision tree and exits normally.
   #
-  # Guarded on embedded mode (how releases run) so `mix run`/`mix test` — interactive, and
-  # whose exit behavior we must not change — are unaffected.
+  # Guarded on "are we a release" so `mix run`/`mix test`, whose exit behavior we must not
+  # change, are unaffected. The signal is whether Mix is loaded: releases don't ship it.
+  #
+  # Do *not* use `:code.get_mode() == :embedded` here, however plausible it looks. Burrito
+  # passes `-mode embedded` to `erlexec` as a single argv string rather than two, so the
+  # VM never actually enters embedded mode and the guard silently never fires — the binary
+  # boots, logs "listening", and exits. That bug survived a local test that looked green
+  # only because a stale process from an earlier run was still holding the port.
+  #
+  # Registering the hook in every release is safe: it only ever runs on `Kernel.CLI`'s halt
+  # path, which a tarball release started via `bin/o11y_proxy start` never takes (that
+  # script already passes `--no-halt`), and which `stop`/SIGTERM don't go through either.
   defp keep_alive_if_release do
-    if :code.get_mode() == :embedded do
+    unless Code.ensure_loaded?(Mix) do
       System.at_exit(fn _status -> Process.sleep(:infinity) end)
     end
   end
