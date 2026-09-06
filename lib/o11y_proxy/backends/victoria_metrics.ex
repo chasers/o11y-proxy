@@ -98,11 +98,23 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
 
   @impl true
   def compile(state, query) do
-    if query.raw do
-      compile_raw(state, query)
-    else
-      compile_structured(state, query)
+    with :ok <- check_cursor(query) do
+      if query.raw do
+        compile_raw(state, query)
+      else
+        compile_structured(state, query)
+      end
     end
+  end
+
+  # Time-series `query_range` results aren't row-paginated the way ClickHouse/Sentry are
+  # — an honest capability gap (`.plans/03-adapters.md`'s cursor design), not a bug.
+  # Rejecting explicitly beats silently ignoring a cursor the caller expected to work.
+  defp check_cursor(%{cursor: nil}), do: :ok
+
+  defp check_cursor(%{cursor: cursor}) do
+    {:error,
+     {:invalid_cursor, "cursor #{inspect(cursor)} given but metrics don't support pagination"}}
   end
 
   defp compile_raw(state, query) do

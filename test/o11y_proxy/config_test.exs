@@ -35,12 +35,15 @@ defmodule O11yProxy.ConfigTest do
 
     assert {:ok, %Config{} = config} = Config.load(path: path)
     assert config.server == %{port: 4001, auth: :none}
-    assert config.defaults == %{limit: 25, max_window: "3d", timeout: "10s"}
+    assert %{limit: 25, max_window: "3d", timeout: "10s"} = config.defaults
     assert [%Config.Source{} = source] = config.sources
     assert source.name == "app_logs"
     assert source.backend == O11yProxy.Test.FakeBackend
     assert source.signal == :logs
-    assert source.opts == %{table: "otel_logs", allow_raw: true}
+    # The adapter's own config_schema/0 defaults are applied too, so assert on what this
+    # test is actually about (env interpolation + declared values) rather than pinning
+    # every default the fixture backend happens to declare.
+    assert %{table: "otel_logs", allow_raw: true} = source.opts
   after
     System.delete_env("O11Y_TEST_TABLE")
   end
@@ -54,7 +57,14 @@ defmodule O11yProxy.ConfigTest do
              Config.load(path: path)
 
     assert server == %{port: 4000, auth: :none}
-    assert defaults == %{limit: 50, max_window: "7d", timeout: "30s"}
+
+    assert defaults == %{
+             limit: 50,
+             max_window: "7d",
+             timeout: "30s",
+             max_bytes: 64_000,
+             redact_keys: []
+           }
   end
 
   @tag :tmp_dir

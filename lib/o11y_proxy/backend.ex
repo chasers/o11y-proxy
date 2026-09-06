@@ -46,18 +46,35 @@ defmodule O11yProxy.Backend do
   (`%{bucket:, severity:, service:, count:, ...}`) — summary output is intentionally not
   canonical-record-shaped, since it never carries `body`/`trace_id`/etc. `BackendCase`
   only checks canonical-record shape against a non-summary query.
+
+  The result map may also carry a `:cursor` key — an opaque token (see
+  `O11yProxy.Cursor`) for the next page, present only when there's more data and the
+  adapter supports pagination (Phase 5, `.plans/05-roadmap.md`). Absent (the default for
+  any adapter that doesn't set it) means "no more pages" / "pagination not supported" —
+  callers must not distinguish the two.
   """
   @callback execute(state(), native :: term()) ::
               {:ok,
                %{
-                 records: [O11yProxy.Record.t()] | [map()],
-                 native: String.t(),
-                 total: non_neg_integer() | nil
+                 required(:records) => [O11yProxy.Record.t()] | [map()],
+                 required(:native) => String.t(),
+                 required(:total) => non_neg_integer() | nil,
+                 optional(:cursor) => String.t()
                }}
               | {:error, term()}
 
   @doc "Cheap liveness check for /healthz."
   @callback health(state()) :: :ok | {:error, term()}
 
-  @optional_callbacks schema: 1, health: 1
+  @doc """
+  Fetch a single record by its backend-native ID — e.g. a Sentry issue ID for
+  `POST /v1/context {"error_id": ...}` (`.plans/05-roadmap.md`, Phase 5). Optional:
+  only makes sense for `:errors`-signal backends with an ID-addressable lookup; most
+  adapters won't implement it. `O11yProxy.Context` tries every configured `:errors`
+  source that exports this, first match wins.
+  """
+  @callback fetch_by_id(state(), id :: String.t()) ::
+              {:ok, O11yProxy.Record.t()} | {:error, term()}
+
+  @optional_callbacks schema: 1, health: 1, fetch_by_id: 2
 end

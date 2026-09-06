@@ -12,6 +12,11 @@ defaults:
   limit: 50
   max_window: 7d
   timeout: 30s
+  max_bytes: 64000 # response byte ceiling; over this, records are trimmed and meta.truncated set
+  # Extra attribute keys to redact, on top of the built-in list (authorization, password,
+  # token, api_key, cookie, set-cookie). Matching is case/separator-insensitive and also
+  # matches a key's last segment, so `http.request.header.authorization` is covered.
+  redact_keys: []
 
 # No sources configured — ClickHouse, VictoriaMetrics, and Sentry adapters all exist now
 # (see .plans/05-roadmap.md, Phases 2-4); this file just doesn't point at any real

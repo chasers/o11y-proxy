@@ -26,7 +26,19 @@ defmodule O11yProxy.Config do
   @defaults_schema [
     limit: [type: :pos_integer, default: 50],
     max_window: [type: :string, default: "7d"],
-    timeout: [type: :string, default: "30s"]
+    timeout: [type: :string, default: "30s"],
+    max_bytes: [
+      type: :pos_integer,
+      default: 64_000,
+      doc: "response byte ceiling before truncation (`.plans/04-cross-cutting.md`)"
+    ],
+    redact_keys: [
+      type: {:list, :string},
+      default: [],
+      doc:
+        "extra attribute keys to redact, on top of O11yProxy.Shaping's built-in list " <>
+          "(authorization, password, token, api_key, cookie, set-cookie)"
+    ]
   ]
 
   @doc "Loads config, raising with a precise message on any failure. Meant for boot."

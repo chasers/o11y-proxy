@@ -17,13 +17,24 @@ defmodule O11yProxy.Test.FakeBackend do
   def config_schema do
     [
       table: [type: :string, required: true],
-      allow_raw: [type: :boolean, default: false]
+      allow_raw: [type: :boolean, default: false],
+      # Phase 5 test knobs: `fail` forces execute/2 to error (circuit-breaker and
+      # partial-failure fan-out tests need deterministic failures), `trace_id` stamps a
+      # shared trace ID across fakes so a /v1/context fan-out has something to correlate.
+      fail: [type: :boolean, default: false],
+      trace_id: [type: :string, default: "abc123"]
     ]
   end
 
   @impl true
   def init(config) do
-    {:ok, %{table: Map.fetch!(config, :table), allow_raw: Map.get(config, :allow_raw, false)}}
+    {:ok,
+     %{
+       table: Map.fetch!(config, :table),
+       allow_raw: Map.get(config, :allow_raw, false),
+       fail: Map.get(config, :fail, false),
+       trace_id: Map.get(config, :trace_id, "abc123")
+     }}
   end
 
   @impl true
@@ -62,7 +73,10 @@ defmodule O11yProxy.Test.FakeBackend do
   end
 
   @impl true
-  def execute(_state, native) do
+  def execute(%{fail: true}, _native),
+    do: {:error, {:fake_unreachable, "fake backend set to fail"}}
+
+  def execute(state, native) do
     records = [
       %Record{
         timestamp: DateTime.to_iso8601(DateTime.utc_now()),
@@ -79,7 +93,7 @@ defmodule O11yProxy.Test.FakeBackend do
         severity: :error,
         body: "fake record 2",
         service: "fake-service",
-        trace_id: "abc123",
+        trace_id: state.trace_id,
         span_id: "def456",
         attributes: %{"k" => "v"},
         source: "fake_backend"

@@ -166,6 +166,32 @@ defmodule O11yProxy.Backends.ClickHouse.SQL do
   defp order(%{order: :asc}), do: "ASC"
   defp order(_), do: "DESC"
 
+  @doc """
+  Keyset-pagination WHERE fragment for `mode: full`'s cursor continuation — single-field
+  on `timestamp` (`ts < {cursor:...}` for `DESC`, `>` for `ASC`), per the Phase 5 cursor
+  design in `.plans/03-adapters.md`. A `nil` cursor yields no extra clause/param. Decode
+  failures (garbage, or a cursor minted by a different backend) surface as
+  `{:invalid_cursor, cursor}` rather than silently ignored or spliced raw.
+
+  Known limitation, documented rather than hidden: this is a single-column key, so ties
+  within the same millisecond at the page boundary may repeat or skip a row — the same
+  spirit as this codebase's other documented per-vendor dialect limits.
+  """
+  @spec cursor_bound(map(), String.t() | nil, :asc | :desc) ::
+          {:ok, {String.t(), DateTime.t() | nil}} | {:error, {:invalid_cursor, term()}}
+  def cursor_bound(_mapping, nil, _order), do: {:ok, {"", nil}}
+
+  def cursor_bound(mapping, cursor, order) do
+    with {:ok, %{"ts" => ts_str}} <- O11yProxy.Cursor.decode(cursor, "clickhouse"),
+         {:ok, ts, _offset} <- DateTime.from_iso8601(ts_str),
+         {:ok, native} <- native_field(mapping, "timestamp") do
+      op = if order == :asc, do: ">", else: "<"
+      {:ok, {"#{native} #{op} {cursor:DateTime64(3)}", ts}}
+    else
+      _ -> {:error, {:invalid_cursor, cursor}}
+    end
+  end
+
   defp select_columns(mapping) do
     projected =
       Enum.map_join(@select_fields, ", ", fn f ->

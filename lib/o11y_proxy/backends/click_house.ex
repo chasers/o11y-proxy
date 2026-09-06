@@ -162,19 +162,19 @@ defmodule O11yProxy.Backends.ClickHouse do
 
       true ->
         case SQL.validate_single_select(query.raw) do
-          :ok -> {:ok, %{sql: query.raw, params: %{}, kind: :raw}}
-          error -> error
+          :ok ->
+            {:ok, %{sql: query.raw, params: %{}, kind: :raw, limit: query.limit, paginate: false}}
+
+          error ->
+            error
         end
     end
   end
 
   defp compile_structured(state, query) do
     with :ok <- check_operators(query.filters),
-         {:ok, {filter_sql, filter_params}} <- SQL.build_where(state.mapping, query.filters) do
-      time_bound = "#{state.partition_key} BETWEEN {from:DateTime64(3)} AND {to:DateTime64(3)}"
-      where_sql = if filter_sql == "", do: time_bound, else: time_bound <> " AND " <> filter_sql
-      params = Map.merge(%{from: query.from, to: query.to}, filter_params)
-
+         {:ok, {filter_sql, filter_params}} <- SQL.build_where(state.mapping, query.filters),
+         {:ok, {where_sql, params}} <- add_bounds(state, query, filter_sql, filter_params) do
       {sql, kind} =
         case query.mode do
           :summary ->
@@ -187,8 +187,38 @@ defmodule O11yProxy.Backends.ClickHouse do
             {SQL.full_sql(state.mapping, state.table_path, where_sql, query), :records}
         end
 
-      {:ok, %{sql: sql, params: params, kind: kind}}
+      {:ok,
+       %{sql: sql, params: params, kind: kind, limit: query.limit, paginate: query.mode == :full}}
     end
+  end
+
+  # Time bound is unconditional (every query, every mode — the guardrail
+  # `.plans/03-adapters.md` calls out). Cursor bound only applies to `mode: full`; a
+  # cursor supplied for :summary/:sample is an explicit error, not silently ignored —
+  # neither mode has a stable per-row key to page from (:summary is aggregated, :sample
+  # is `ORDER BY rand()`).
+  defp add_bounds(state, query, filter_sql, filter_params) do
+    time_bound = "#{state.partition_key} BETWEEN {from:DateTime64(3)} AND {to:DateTime64(3)}"
+    params = Map.merge(%{from: query.from, to: query.to}, filter_params)
+
+    with {:ok, {cursor_clause, cursor_value}} <- cursor_bound_for_mode(state, query) do
+      where_sql =
+        [time_bound, filter_sql, cursor_clause] |> Enum.reject(&(&1 == "")) |> Enum.join(" AND ")
+
+      params = if cursor_value, do: Map.put(params, :cursor, cursor_value), else: params
+      {:ok, {where_sql, params}}
+    end
+  end
+
+  defp cursor_bound_for_mode(state, %{mode: :full, cursor: cursor, order: order}) do
+    SQL.cursor_bound(state.mapping, cursor, order)
+  end
+
+  defp cursor_bound_for_mode(_state, %{cursor: nil}), do: {:ok, {"", nil}}
+
+  defp cursor_bound_for_mode(_state, %{cursor: cursor}) do
+    {:error,
+     {:invalid_cursor, "cursor #{inspect(cursor)} given but only mode: full supports pagination"}}
   end
 
   defp check_operators(filters) do
@@ -198,16 +228,27 @@ defmodule O11yProxy.Backends.ClickHouse do
   end
 
   @impl true
-  def execute(state, %{sql: sql, params: params, kind: kind}) do
+  def execute(state, %{sql: sql, params: params, kind: kind} = native) do
     case run(state, sql, params) do
       {:ok, %Ch.Result{columns: columns, rows: rows}} ->
         records = rows_to_output(kind, columns, rows)
-        {:ok, %{records: records, native: to_string(sql), total: length(records)}}
+        result = %{records: records, native: to_string(sql), total: length(records)}
+        {:ok, maybe_put_cursor(result, native, records)}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  # A full page (exactly `limit` rows) means there might be more — hand back a cursor
+  # keyed on the last row's timestamp. A short page means we've reached the end.
+  defp maybe_put_cursor(result, %{paginate: true, limit: limit}, records)
+       when length(records) == limit and records != [] do
+    cursor = O11yProxy.Cursor.encode("clickhouse", %{"ts" => List.last(records).timestamp})
+    Map.put(result, :cursor, cursor)
+  end
+
+  defp maybe_put_cursor(result, _native, _records), do: result
 
   @impl true
   def health(state) do

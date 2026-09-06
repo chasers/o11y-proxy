@@ -5,9 +5,11 @@ ClickHouse, and VictoriaMetrics (Logflare/BigQuery deferred), so an agent can de
 production without learning three query dialects.
 
 Status: ClickHouse, VictoriaMetrics, and Sentry adapters implemented and passing their
-contract tests (Phases 0-4, see `.plans/05-roadmap.md`) — `/v1/query` is live for a single
-source at a time. Cross-backend correlation (`/v1/context`, shown below) is still
-aspirational; fan-out lands in Phase 5.
+contract tests, plus cross-backend correlation — `/v1/query` (single source) and
+`/v1/context` (fan-out across every configured source) are both live, with circuit
+breakers, attribute redaction, response byte ceilings, and cursor pagination (Phases 0-5,
+see `.plans/05-roadmap.md`). Not built yet: the result cache, per-source rate limiting,
+and the agent eval suite.
 
 ## Example queries
 
@@ -135,3 +137,21 @@ POST /v1/context
 Bundles, in one call: the `otel_traces` spans for that trace, the `app_logs` lines sharing
 the trace ID, the `prod_errors` Sentry issue if the trace ID appears in an event's
 contexts, and `prod_metrics` for `checkout-api` over the trace's window.
+
+Every source is queried concurrently under one deadline, so a slow or broken backend
+becomes an entry in `errors` while the healthy ones still return data. `error: null` means
+"queried, no matching issue" — distinct from an entry in `errors`, which means the error
+source itself failed.
+
+Two other ways in, when you don't have a trace ID:
+
+```json
+POST /v1/context
+{"error_id": "7627311504"}                                  // resolves the error, then
+                                                            // correlates on its trace ID
+{"from": "now-1h", "to": "now", "service": "checkout-api"}   // no anchor entity
+```
+
+Metrics are the interesting case: they carry no `trace_id`, so a trace lookup runs in two
+stages — fan out the trace ID first, then use the service and time window *discovered*
+from those results to query the metrics sources.

@@ -11,6 +11,8 @@ defmodule O11yProxy.Router do
   use Plug.ErrorHandler
   require Logger
 
+  alias O11yProxy.Shaping
+
   plug(Plug.Telemetry, event_prefix: [:o11y_proxy, :http])
   plug(:match)
 
@@ -73,7 +75,25 @@ defmodule O11yProxy.Router do
   end
 
   post "/v1/context" do
-    send_json(conn, 501, not_implemented("context"))
+    case O11yProxy.Context.resolve(conn.body_params) do
+      {:ok, bundle} ->
+        send_json(conn, 200, shape_context(bundle))
+
+      {:error, :ambiguous_request} ->
+        send_json(conn, 400, %{
+          error: "invalid_query",
+          message: "give exactly one of trace_id, error_id, or {from, to, service}"
+        })
+
+      {:error, :empty_request} ->
+        send_json(conn, 400, %{
+          error: "invalid_query",
+          message: "one of trace_id, error_id, or {from, to, service} is required"
+        })
+
+      {:error, reason} ->
+        send_json(conn, 400, %{error: "invalid_query", message: inspect(reason)})
+    end
   end
 
   match _ do
@@ -97,7 +117,7 @@ defmodule O11yProxy.Router do
     case O11yProxy.Sources.run_query(name, query) do
       {:ok, result} ->
         elapsed = System.monotonic_time(:millisecond) - started
-        send_json(conn, 200, envelope(name, result, elapsed, []))
+        send_json(conn, 200, envelope(name, result, query.mode, elapsed, []))
 
       {:error, :not_found} ->
         send_json(conn, 404, %{error: "not_found", message: "no such source: #{name}"})
@@ -106,7 +126,7 @@ defmodule O11yProxy.Router do
         elapsed = System.monotonic_time(:millisecond) - started
         error = error_for(name, reason)
         empty = %{records: [], native: "", total: 0}
-        send_json(conn, 200, envelope(name, empty, elapsed, [error]))
+        send_json(conn, 200, envelope(name, empty, query.mode, elapsed, [error]))
     end
   end
 
@@ -126,43 +146,82 @@ defmodule O11yProxy.Router do
     })
   end
 
-  # `{:rate_limited, retry_after_ms}` is the shape an adapter (currently only Sentry)
-  # returns when it hits a 429 — see `.plans/01-agent-contract.md`'s envelope example.
-  # Every other adapter error stays a generic `query_failed` with no retry hint.
-  defp error_for(name, {:rate_limited, retry_after_ms}) do
-    %{source: name, code: "rate_limited", message: "rate limited", retry_after_ms: retry_after_ms}
-  end
+  defp error_for(name, reason), do: O11yProxy.ResponseError.build(name, reason)
 
-  defp error_for(name, reason) do
-    %{source: name, code: "query_failed", message: inspect(reason), retry_after_ms: nil}
-  end
+  # Both endpoints funnel through O11yProxy.Shaping before serialization — redaction is
+  # security-critical (`.plans/04-cross-cutting.md`) and must not be skippable by adding a
+  # new response path.
+  #
+  # What gets collapsed differs by signal, deliberately:
+  #   * `logs` shape at `:sample` budget (redact + elide + collapse duplicates) — repeated
+  #     identical log lines are the single largest budget win on real incident data.
+  #   * `trace` is redacted and elided but *never* collapsed. Spans in one trace share a
+  #     service and severity and often a name (five `SELECT users` spans is normal), so
+  #     collapsing would merge them and throw away the per-span timestamps that make a
+  #     waterfall readable — on the endpoint that exists to correlate traces.
+  #   * the singular `error` is only redacted: it's one object, and its stack trace is the
+  #     highest-value payload in the bundle.
+  defp shape_context(bundle) do
+    extra = redact_keys()
 
-  defp envelope(name, result, elapsed_ms, errors) do
     %{
-      data: result.records,
+      bundle
+      | trace: Shaping.shape(bundle.trace, :full, extra) |> Enum.map(&elide(&1)),
+        logs: Shaping.shape(bundle.logs, :sample, extra),
+        error: shape_error(bundle.error, extra)
+    }
+    |> recount_returned()
+    |> Shaping.enforce_byte_ceiling([:trace, :logs, :metrics], byte_ceiling())
+  end
+
+  defp elide(%O11yProxy.Record{} = record),
+    do: %{record | attributes: Shaping.elide_long_attributes(record.attributes)}
+
+  defp elide(other), do: other
+
+  # Shaping collapses duplicates, so the count computed in O11yProxy.Context (before
+  # shaping) can overstate what actually ships. Recount here, where the final lists exist.
+  defp recount_returned(bundle) do
+    error_count = if bundle.error, do: 1, else: 0
+    returned = length(bundle.trace) + length(bundle.logs) + length(bundle.metrics) + error_count
+    %{bundle | meta: Map.put(bundle.meta, :returned, returned)}
+  end
+
+  defp shape_error(nil, _extra), do: nil
+
+  defp shape_error(%O11yProxy.Record{} = record, extra) do
+    %{record | attributes: Shaping.redact(record.attributes, extra)}
+  end
+
+  defp envelope(name, result, mode, elapsed_ms, errors) do
+    records = Shaping.shape(result.records, mode, redact_keys())
+
+    %{
+      data: records,
       meta: %{
         sources_queried: [name],
         elapsed_ms: elapsed_ms,
         truncated: false,
         total_matched: result.total,
-        returned: length(result.records),
-        cursor: nil,
+        returned: length(records),
+        cursor: Map.get(result, :cursor),
         native_queries: %{name => result.native}
       },
       errors: errors
     }
+    |> Shaping.enforce_byte_ceiling([:data], byte_ceiling())
   end
 
   defp default_limit do
     Application.get_env(:o11y_proxy, :defaults, %{limit: 50}).limit
   end
 
-  defp not_implemented(what) do
-    %{
-      error: "not_implemented",
-      message:
-        "/v1/#{what} has no backend adapters wired up yet (Phase 1 skeleton) — see .plans/05-roadmap.md"
-    }
+  defp redact_keys do
+    Application.get_env(:o11y_proxy, :defaults, %{}) |> Map.get(:redact_keys, [])
+  end
+
+  defp byte_ceiling do
+    Application.get_env(:o11y_proxy, :defaults, %{}) |> Map.get(:max_bytes, 64_000)
   end
 
   defp send_json(conn, status, body) do

@@ -120,7 +120,10 @@ defmodule O11yProxy.Backends.Sentry do
 
   defp compile_raw(state, query) do
     if state.allow_raw do
-      {:ok, %{query: query.raw, from: query.from, to: query.to, limit: query.limit}}
+      with {:ok, cursor} <- decode_cursor(query.cursor) do
+        {:ok,
+         %{query: query.raw, from: query.from, to: query.to, limit: query.limit, cursor: cursor}}
+      end
     else
       {:error, {:raw_not_allowed, "this source does not set allow_raw: true"}}
     end
@@ -128,8 +131,29 @@ defmodule O11yProxy.Backends.Sentry do
 
   defp compile_structured(query) do
     with :ok <- check_operators(query.filters),
-         {:ok, search_query} <- Search.build_query(query.filters) do
-      {:ok, %{query: search_query, from: query.from, to: query.to, limit: query.limit}}
+         {:ok, search_query} <- Search.build_query(query.filters),
+         {:ok, cursor} <- decode_cursor(query.cursor) do
+      {:ok,
+       %{query: search_query, from: query.from, to: query.to, limit: query.limit, cursor: cursor}}
+    end
+  end
+
+  # Sentry hands out its own real cursor tokens via the `Link` response header (confirmed
+  # live 2026-09-06 against `.../organizations/{org}/issues/`) — this just unwraps our
+  # opaque `O11yProxy.Cursor` envelope back to Sentry's native token, which gets passed
+  # straight through as the `cursor` query param. A garbage/wrong-backend token is a
+  # normal invalid_cursor error, not a crash.
+  defp decode_cursor(nil), do: {:ok, nil}
+
+  defp decode_cursor(token) do
+    case O11yProxy.Cursor.decode(token, "sentry") do
+      {:ok, %{"cursor" => native_cursor}} when is_binary(native_cursor) ->
+        {:ok, native_cursor}
+
+      # A structurally valid envelope carrying the wrong payload is still just a bad
+      # cursor — it must not fall through to a CaseClauseError and a 500.
+      _ ->
+        {:error, {:invalid_cursor, token}}
     end
   end
 
@@ -149,17 +173,19 @@ defmodule O11yProxy.Backends.Sentry do
         "limit" => native.limit
       }
       |> maybe_put_query(native.query)
+      |> maybe_put_cursor_param(native.cursor)
 
     url = "#{state.base_url}/organizations/#{state.org}/issues/"
 
-    case get_json(state, url, params) do
-      {:ok, issues} when is_list(issues) ->
+    case get_with_headers(state, url, params) do
+      {:ok, {issues, headers}} when is_list(issues) ->
         records =
           issues
           |> Enum.map(&issue_to_record(&1, state))
           |> attach_trace_ids(state)
 
-        {:ok, %{records: records, native: native_text(url, params), total: length(records)}}
+        result = %{records: records, native: native_text(url, params), total: length(records)}
+        {:ok, maybe_put_cursor(result, headers)}
 
       {:error, reason} ->
         {:error, reason}
@@ -169,7 +195,37 @@ defmodule O11yProxy.Backends.Sentry do
   defp maybe_put_query(params, ""), do: params
   defp maybe_put_query(params, query), do: Map.put(params, "query", query)
 
+  defp maybe_put_cursor_param(params, nil), do: params
+  defp maybe_put_cursor_param(params, cursor), do: Map.put(params, "cursor", cursor)
+
+  defp maybe_put_cursor(result, headers) do
+    case parse_next_cursor(headers) do
+      nil ->
+        result
+
+      native_cursor ->
+        Map.put(result, :cursor, O11yProxy.Cursor.encode("sentry", %{"cursor" => native_cursor}))
+    end
+  end
+
   defp native_text(url, params), do: "GET #{url}?#{URI.encode_query(params)}"
+
+  @impl true
+  def fetch_by_id(state, id) do
+    url = "#{state.base_url}/organizations/#{state.org}/issues/#{id}/"
+
+    case get_json(state, url, %{}) do
+      {:ok, issue} ->
+        record = issue_to_record(issue, state)
+        {:ok, %{record | trace_id: fetch_trace_id(record, state)}}
+
+      {:error, {:sentry_error, "HTTP 404" <> _}} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   @impl true
   def health(state) do
@@ -254,11 +310,18 @@ defmodule O11yProxy.Backends.Sentry do
   # -- HTTP --------------------------------------------------------------------------------
 
   defp get_json(state, url, params) do
+    case get_with_headers(state, url, params) do
+      {:ok, {body, _headers}} -> {:ok, body}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp get_with_headers(state, url, params) do
     opts = [params: params, auth: {:bearer, state.token}, receive_timeout: state.timeout_ms]
 
     case Req.get(url, opts) do
-      {:ok, %{status: 200, body: body}} ->
-        {:ok, body}
+      {:ok, %{status: 200, body: body, headers: headers}} ->
+        {:ok, {body, headers}}
 
       {:ok, %{status: 429} = resp} ->
         {:error, {:rate_limited, retry_after_ms(resp)}}
@@ -268,6 +331,27 @@ defmodule O11yProxy.Backends.Sentry do
 
       {:error, exception} ->
         {:error, {:sentry_unreachable, Exception.message(exception)}}
+    end
+  end
+
+  # Sentry's issue-list pagination is a real `Link` response header (RFC 5988-shaped),
+  # confirmed live 2026-09-06:
+  #   <...&cursor=X>; rel="previous"; results="false"; cursor="X",
+  #   <...&cursor=Y>; rel="next"; results="true"; cursor="Y"
+  # Only the `rel="next"` segment matters, and only when `results="true"` — `"false"`
+  # means Sentry itself confirms there's nothing more in that direction, so no cursor
+  # should be handed back (an agent paging on a truthy cursor would just get an empty
+  # page back, wasting a call).
+  @link_next_re ~r/<[^>]*>;\s*rel="next";\s*results="(true|false)";\s*cursor="([^"]+)"/
+
+  @doc false
+  @spec parse_next_cursor(map()) :: String.t() | nil
+  def parse_next_cursor(headers) do
+    with link when is_binary(link) <- header(headers, "link"),
+         [_, "true", cursor] <- Regex.run(@link_next_re, link) do
+      cursor
+    else
+      _ -> nil
     end
   end
 
