@@ -11,7 +11,14 @@ defmodule O11yProxy.MixProject do
       deps: deps(),
       aliases: aliases(),
       releases: releases(),
-      dialyzer: [plt_local_path: "priv/plts", plt_core_path: "priv/plts"]
+      # `:ex_unit` because elixirc_paths/1 compiles test/support in the test env, and CI
+      # runs dialyzer there — O11yProxy.BackendCase calls ExUnit.Assertions, which is not
+      # otherwise in the PLT. Without it dialyzer is green locally in :dev and red in CI.
+      dialyzer: [
+        plt_local_path: "priv/plts",
+        plt_core_path: "priv/plts",
+        plt_add_apps: [:ex_unit]
+      ]
     ]
   end
 
