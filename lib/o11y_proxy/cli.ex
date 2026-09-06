@@ -1,6 +1,6 @@
 defmodule O11yProxy.CLI do
   @moduledoc """
-  The one-shot command surface from `.plans/07-cli.md`: `o11y-proxy context --trace-id X`
+  The one-shot command surface: `o11y-proxy context --trace-id X`
   instead of "write a config, start a daemon, keep it running, curl a port".
 
   ## Why this lives in `Application.start/2`

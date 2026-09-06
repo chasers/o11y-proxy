@@ -1,5 +1,5 @@
 defmodule O11yProxy.Query.Filter do
-  @moduledoc "One canonical filter clause. See `.plans/01-agent-contract.md`."
+  @moduledoc "One canonical filter clause."
 
   @operators [:eq, :neq, :gte, :lte, :contains, :regex, :in, :exists]
 

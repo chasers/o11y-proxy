@@ -2,7 +2,7 @@ defmodule O11yProxy.Backends.ClickHouseTest do
   @moduledoc """
   Runs `O11yProxy.BackendCase` against the real adapter and a real ClickHouse. Excluded
   by default (see `test/test_helper.exs`) since this sandbox has no docker available to
-  run one — `.plans/04-cross-cutting.md` calls for ClickHouse in CI via docker-compose,
+  run one. ClickHouse in CI runs via docker-compose,
   which is what `docker/docker-compose.yml` + `docker/seed.sh` are for.
 
   To run for real:

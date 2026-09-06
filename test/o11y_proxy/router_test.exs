@@ -60,7 +60,7 @@ defmodule O11yProxy.RouterTest do
     assert %{"error" => "not_found"} = Jason.decode!(conn.resp_body)
   end
 
-  test "POST /v1/query rejects more than one source — fan-out is Phase 5" do
+  test "POST /v1/query rejects more than one source — query fan-out is not built" do
     conn =
       post_json(:post, "/v1/query", %{
         "sources" => ["a", "b"],

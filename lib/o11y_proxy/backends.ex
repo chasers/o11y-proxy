@@ -2,8 +2,7 @@ defmodule O11yProxy.Backends do
   @moduledoc """
   Resolves a config file's `backend:` string to an adapter module. Adapters are
   discovered from config, not a compile-time list — third parties register by adding to
-  `config :o11y_proxy, :backends`, merged over the defaults below. See
-  `.plans/02-backend-behaviour.md`.
+  `config :o11y_proxy, :backends`, merged over the defaults below.
   """
 
   @default %{

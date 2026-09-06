@@ -7,10 +7,9 @@ can debug production without learning three query dialects.
 Status: ClickHouse, VictoriaMetrics, and Sentry adapters implemented and passing their
 contract tests, plus cross-backend correlation — `/v1/query` (single source) and
 `/v1/context` (fan-out across every configured source) are both live, with circuit
-breakers, attribute redaction, response byte ceilings, and cursor pagination (Phases 0-5,
-see `.plans/05-roadmap.md`). There is also a CLI, so a one-shot question needs no daemon
-at all. Not built yet: the result cache, per-source rate limiting, and the agent eval
-suite.
+breakers, attribute redaction, response byte ceilings, and cursor pagination. There is
+also a CLI, so a one-shot question needs no daemon at all. Not built yet: the result
+cache, per-source rate limiting, and the agent eval suite.
 
 ## Install
 
@@ -180,7 +179,7 @@ sources:
     signal: errors
     org: ${SENTRY_ORG}
     project: ${SENTRY_PROJECT}
-    token: ${SENTRY_AUTH_TOKEN} # needs org:read — see .plans/03-adapters.md
+    token: ${SENTRY_AUTH_TOKEN} # needs org:read
 ```
 
 ```bash
@@ -316,8 +315,7 @@ mapping).
 ### Sentry errors — full
 
 Only `mode: full` is implemented — Sentry's issue-search API is a flat list of issue
-groups, not time-bucketed, so `summary`/`sample` aren't faked on top of it (see
-`.plans/03-adapters.md`).
+groups, not time-bucketed, so `summary`/`sample` aren't faked on top of it.
 
 ```json
 POST /v1/query

@@ -4,9 +4,9 @@ defmodule O11yProxy.Response do
   every transport.
 
   This lived inside `O11yProxy.Router` while HTTP was the only way in. It moved out when
-  the CLI arrived (`.plans/07-cli.md`): redaction and budget shaping are security-relevant
-  (`.plans/04-cross-cutting.md`), and two transports each building their own envelope is
-  exactly how the security-relevant half drifts silently. Both the router and
+  the CLI arrived: redaction and budget shaping are security-relevant, and two transports
+  each building their own envelope is exactly how the security-relevant half drifts
+  silently. Both the router and
   `O11yProxy.CLI`'s in-process path call these functions, so there is one definition of
   what leaves this program.
   """

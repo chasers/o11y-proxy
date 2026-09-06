@@ -1,5 +1,4 @@
 # o11y-proxy config. Safe to commit: secrets are only ever ${ENV_VAR} references, never
-# literals. See .plans/02-backend-behaviour.md for the full format.
 #
 # Override this file's location with O11Y_PROXY_CONFIG, or drop one at
 # ~/.config/o11y-proxy/config.yaml.
@@ -19,8 +18,8 @@ defaults:
   redact_keys: []
 
 # No sources configured — ClickHouse, VictoriaMetrics, and Sentry adapters all exist now
-# (see .plans/05-roadmap.md, Phases 2-4); this file just doesn't point at any real
-# instances. A source block looks like this (from .plans/02-backend-behaviour.md):
+# — this file just doesn't point at any real
+# instances. A source block looks like this:
 #
 # sources:
 #   - name: app_logs
@@ -49,7 +48,7 @@ defaults:
 #     signal: errors
 #     org: ${SENTRY_ORG}
 #     project: ${SENTRY_PROJECT}
-#     token: ${SENTRY_AUTH_TOKEN}   # needs org:read or broader — see .plans/03-adapters.md
+#     token: ${SENTRY_AUTH_TOKEN}   # needs org:read or broader
 #     allow_raw: true
 #
 #   - name: prod_metrics

@@ -5,7 +5,7 @@ defmodule O11yProxy.CredentialResolver do
   v1 is single-user/local: config already holds `${ENV_VAR}` values interpolated at load
   time (see `O11yProxy.Config`), so the default resolver is the identity function. A
   shared deployment swaps in a resolver that looks up per-caller credentials instead —
-  adapters call `resolve/2` and never know the difference. See `.plans/04-cross-cutting.md`.
+  adapters call `resolve/2` and never know the difference.
   """
 
   @callback resolve(source_opts :: map(), caller :: O11yProxy.Caller.t()) ::

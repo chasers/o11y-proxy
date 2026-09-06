@@ -3,7 +3,7 @@ defmodule O11yProxy.Sources.StateTable do
   Owns a public ETS table mapping source name -> `%{backend, backend_name, signal, state}`.
 
   Exists so query execution can read a source's adapter state without a `GenServer.call`
-  round trip: per `.plans/02-backend-behaviour.md`, "the source process is a policy
+  round trip: "the source process is a policy
   holder, not a bottleneck" — one slow query must not block that source's own health
   checks or other queries. The `O11yProxy.Sources.Server` GenServer still owns the
   process lifecycle and writes/deletes its own entry; this table is purely a fast,
@@ -54,8 +54,8 @@ defmodule O11yProxy.Sources.StateTable do
 
   @doc """
   Per-source circuit breaker state, stored on the same entry `Sources.Server` already
-  writes (`put/2`) rather than a separate table or process — see
-  `.plans/02-backend-behaviour.md`'s "policy holder, not a bottleneck": these are written
+  writes (`put/2`) rather than a separate table or process —
+  "policy holder, not a bottleneck": these are written
   directly from the supervised `Task` that runs a query in `O11yProxy.Sources.run_query/3`,
   with no `GenServer.call` round trip, so one hammered source's breaker bookkeeping never
   queues behind that source's own `:capabilities`/`:health` calls.
@@ -89,7 +89,7 @@ defmodule O11yProxy.Sources.StateTable do
   @doc """
   Bumps the failure count on a failed query; once it reaches `threshold`, opens the
   breaker for `backoff_ms`. A success resets the count to zero (`record_success/1`), so
-  the breaker only trips on *consecutive* failures, per `.plans/04-cross-cutting.md`.
+  the breaker only trips on *consecutive* failures.
 
   The increment is an atomic `:ets.update_counter/4` (inserting a default row if this is
   the source's first failure) rather than a read-modify-write, so concurrent fan-out

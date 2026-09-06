@@ -1,12 +1,11 @@
 defmodule O11yProxy.Backends.Sentry.MappingTest do
   @moduledoc """
   Exercises `O11yProxy.Backends.Sentry.issue_to_record/2` — the pure issue->canonical
-  mapping — against a captured-and-scrubbed real issue-list response (see
-  `.plans/05-roadmap.md`'s "Captured + scrubbed response fixtures"). Shape and field
+  mapping — against a captured-and-scrubbed real issue-list response. Shape and field
   names are exactly what `GET /organizations/{org}/issues/` returned live on
   2026-09-06; every identifying value (org, project, ids, culprit path, error text) has
-  been replaced with fiction consistent with `spec/transcripts/`'s "checkout-api" /
-  "payments-db" universe. No network access needed to run this test.
+  been replaced with fiction from the same "checkout-api" / "payments-db" universe the
+  rest of the fixtures use. No network access needed to run this test.
   """
 
   use ExUnit.Case, async: true

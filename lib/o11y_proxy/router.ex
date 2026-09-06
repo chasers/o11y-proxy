@@ -1,12 +1,12 @@
 defmodule O11yProxy.Router do
   @moduledoc """
-  The `/v1/*` HTTP surface from `.plans/01-agent-contract.md`.
+  The `/v1/*` HTTP surface.
 
   Deliberately thin. Every data endpoint hands its parsed body to
   `O11yProxy.Remote.handle/1` and does nothing but turn the result into a status code —
   routing, validation, shaping and redaction all live behind that one call, which the CLI
-  (`.plans/07-cli.md`) enters through as well. Two transports mapping the same façade onto
-  their own status conventions is what keeps them from becoming two implementations.
+  enters through as well. Two transports mapping the same façade onto their own status
+  conventions is what keeps them from becoming two implementations.
 
   What stays here is genuinely HTTP: matching, JSON parsing, auth, telemetry, the
   OpenAPI/Prometheus documents, and the status-code table below.
@@ -76,8 +76,8 @@ defmodule O11yProxy.Router do
   end
 
   # `{:ok, _}` is 200 even when the body carries entries in `errors[]` — a source that
-  # failed is a partial answer, and the contract says partial results are the normal path
-  # (`.plans/04-cross-cutting.md`). Only a request we could not serve at all gets a 4xx/5xx.
+  # failed is a partial answer, and the contract says partial results are the normal
+  # path. Only a request we could not serve at all gets a 4xx/5xx.
   defp respond(conn, {:ok, body}), do: send_json(conn, 200, body)
 
   defp respond(conn, {:error, %{error: name} = body}),

@@ -34,7 +34,7 @@ defmodule O11yProxy.CLI.ArgsTest do
       assert message =~ "--help"
     end
 
-    # `.plans/07-cli.md`: if control ever reached Kernel.CLI it would swallow these, so we
+    # If control ever reached Kernel.CLI it would swallow these, so we
     # own them. -h/-v included, since those are the ones Kernel.CLI takes for itself.
     test "--help and --version are ours, in either form and anywhere in argv" do
       assert {:print, help} = Args.parse(["--help"])

@@ -1,7 +1,7 @@
 defmodule O11yProxy.Backends.VictoriaMetrics do
   @moduledoc """
-  Metrics adapter over VictoriaMetrics' Prometheus-compatible HTTP API. Built second per
-  `.plans/03-adapters.md` — "the real test of pluggability" since it's not SQL, unlike
+  Metrics adapter over VictoriaMetrics' Prometheus-compatible HTTP API. Built second, as
+  "the real test of pluggability" since it's not SQL, unlike
   ClickHouse. If this needed changes to `O11yProxy.Backend` itself, the abstraction was
   overfit to SQL; it didn't.
 
@@ -68,7 +68,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   @impl true
   def schema(state) do
     with {:ok, %{"data" => label_names}} <- get_json(state, "/api/v1/labels", %{}) do
-      # Genuinely cheap per .plans/03-adapters.md, but still bounded — a VM instance can
+      # Genuinely cheap, but still bounded — a VM instance can
       # have hundreds of label names, and we're not fetching one distinct-values call per.
       fields =
         label_names
@@ -108,7 +108,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   end
 
   # Time-series `query_range` results aren't row-paginated the way ClickHouse/Sentry are
-  # — an honest capability gap (`.plans/03-adapters.md`'s cursor design), not a bug.
+  # — an honest capability gap, not a bug.
   # Rejecting explicitly beats silently ignoring a cursor the caller expected to work.
   defp check_cursor(%{cursor: nil}), do: :ok
 

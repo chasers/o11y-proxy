@@ -1,16 +1,14 @@
 defmodule O11yProxy.Backends.Sentry do
   @moduledoc """
-  Errors adapter over the Sentry API. Built third per `.plans/03-adapters.md`'s build
-  order — the awkward vendor dialect, by which point `O11yProxy.BackendCase` catches
-  drift automatically. Endpoints and shapes below are live-verified against a real org
-  (2026-09-06), not just docs — see the Phase 4 spike writeup in `.plans/03-adapters.md`
-  and `.plans/05-roadmap.md` for exactly what was confirmed.
+  Errors adapter over the Sentry API. Built third: the awkward vendor dialect, by which
+  point `O11yProxy.BackendCase` catches drift automatically. Endpoints and shapes below
+  are live-verified against a real org (2026-09-06), not just docs.
 
   **Only `mode: full` is supported for v1.** Sentry's org-scoped issue-search API
   (`GET /organizations/{org}/issues/`) returns a flat list of issue *groups* — one row
   per distinct error, not per event, and not time-bucketed. There is no live-verified
-  path yet to the time-bucketed aggregate `summary` mode promises
-  (`.plans/01-agent-contract.md`); building that on an unverified guess about Sentry's
+  path yet to the time-bucketed aggregate `summary` mode promises; building that on an
+  unverified guess about Sentry's
   per-issue stats-sparkline shape would repeat exactly the mistake the Phase 4 spike was
   meant to avoid. Revisit once that shape gets its own spike.
 
@@ -39,7 +37,7 @@ defmodule O11yProxy.Backends.Sentry do
         required: true,
         doc:
           "org auth token; needs at least org:read (issues/events alone need less, " <>
-            "but trace/trace-meta 403 without it — see .plans/03-adapters.md)"
+            "but trace/trace-meta 403 without it)"
       ],
       base_url: [type: :string, default: "https://sentry.io/api/0"],
       allow_raw: [
@@ -240,8 +238,7 @@ defmodule O11yProxy.Backends.Sentry do
   # -- issue -> canonical record ---------------------------------------------------------
   #
   # Pure given a decoded issue map — exercised directly in
-  # test/o11y_proxy/backends/sentry/mapping_test.exs against scrubbed captured fixtures,
-  # per .plans/05-roadmap.md's "Captured + scrubbed response fixtures".
+  # test/o11y_proxy/backends/sentry/mapping_test.exs against scrubbed captured fixtures.
 
   @doc false
   @spec issue_to_record(map(), map()) :: Record.t()
@@ -356,8 +353,8 @@ defmodule O11yProxy.Backends.Sentry do
   end
 
   # Sentry's general API docs don't confirm a `Retry-After` header exists on a 429 (only
-  # the separate event-ingest endpoint's docs mention one) — see the Phase 4 spike
-  # caveat in .plans/03-adapters.md. Prefer it if present, since it's the most direct
+  # the separate event-ingest endpoint's docs mention one). Prefer it if present, since
+  # it's the most direct
   # signal; fall back to `X-Sentry-Rate-Limit-Reset` (confirmed present on every response,
   # live-verified), which is a unix-seconds window-reset time, not a wait duration, so it
   # still needs converting to a relative offset from now.

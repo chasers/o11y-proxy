@@ -1,7 +1,7 @@
 defmodule O11yProxy.Test.FakeBackendTest do
   @moduledoc """
-  Self-test for `O11yProxy.BackendCase` (Phase 1, before any real adapter exists) — see
-  `.plans/02-backend-behaviour.md`. Every real adapter's test file (ClickHouse,
+  Self-test for `O11yProxy.BackendCase` (Phase 1, before any real adapter exists).
+  Every real adapter's test file (ClickHouse,
   VictoriaMetrics, Sentry, ...) will `use O11yProxy.BackendCase` the same way this does.
   """
 
