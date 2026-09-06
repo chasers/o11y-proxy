@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  MIX_ENV: test
+
+jobs:
+  test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned deliberately, and not free to bump: these must stay in step with
+      # `.tool-versions` and `release.yml`, which explains the constraint in full — Burrito
+      # can only build a single-file binary for an OTP version the Beam Machine CDN
+      # publishes a precompiled ERTS for. Testing on a version we cannot ship a binary of
+      # would be testing something nobody runs.
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.16"
+          elixir-version: "1.18.5"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix format --check-formatted
+      # The default run only. The `clickhouse`, `victoriametrics` and `sentry` tags need
+      # live backends and credentials (see `test/test_helper.exs`), so they stay opt-in and
+      # are exercised locally against real instances rather than faked here.
+      - run: mix test
