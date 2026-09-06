@@ -1,0 +1,133 @@
+defmodule O11yProxy.Remote do
+  @moduledoc """
+  The one entry point every transport goes through: a string-keyed request in, an
+  already-shaped response map out.
+
+  `.plans/07-cli.md` introduces this as the single stable façade the CLI will `:erpc`
+  into a running daemon. Keeping it to *one* function is what contains version skew —
+  a newer CLI talking to an older daemon depends on this contract and nothing else,
+  never on the shape of an internal function.
+
+  It earns its place before any of that, though, because it is also what stops the CLI
+  and the HTTP router being two implementations of the same dispatch. The router is now
+  a thin shell that calls `handle/1` and maps the result onto a status code; the CLI
+  calls `handle/1` and maps it onto an exit code. Neither decides what a query response
+  contains.
+
+  The `{:ok, _}` / `{:error, _}` split is the transport-neutral form of "did we produce a
+  response": `{:ok, body}` is HTTP 200 and CLI exit 0 — *including* a partial result whose
+  `errors` list is non-empty, which is the normal path for a fan-out where one source is
+  down (`.plans/04-cross-cutting.md`). `{:error, body}` is a request that could not be
+  served at all: a malformed query, an unknown source. `body` is JSON-encodable either way.
+  """
+
+  alias O11yProxy.{Context, Query, Response, ResponseError, Sources}
+
+  @protocol_version 1
+
+  @doc """
+  The version of `handle/1`'s contract.
+
+  Deliberately a protocol integer rather than the app version: it is bumped only when the
+  request or response shape here actually changes, so a 0.1.0 CLI keeps using a 0.1.4
+  daemon instead of falling back to a cold in-process run on every patch release.
+  """
+  @spec protocol_version() :: pos_integer()
+  def protocol_version, do: @protocol_version
+
+  @doc """
+  Runs one command. `request` is the same string-keyed map the corresponding HTTP
+  endpoint receives (straight from `Jason.decode!/1`, or built by `O11yProxy.CLI.Args`).
+  """
+  @spec handle(map()) :: {:ok, map()} | {:error, map()}
+  def handle(%{"command" => "query", "request" => request}) do
+    case Query.parse(request, default_limit: Response.default_limit()) do
+      {:ok, query} -> run_query(query)
+      {:error, reason} -> invalid_query(inspect(reason))
+    end
+  end
+
+  def handle(%{"command" => "context", "request" => request}) do
+    case Context.resolve(request) do
+      {:ok, bundle} ->
+        {:ok, Response.context_bundle(bundle)}
+
+      {:error, :ambiguous_request} ->
+        invalid_query("give exactly one of trace_id, error_id, or {from, to, service}")
+
+      {:error, :empty_request} ->
+        invalid_query("one of trace_id, error_id, or {from, to, service} is required")
+
+      {:error, reason} ->
+        invalid_query(inspect(reason))
+    end
+  end
+
+  def handle(%{"command" => "sources"}), do: {:ok, %{sources: Sources.list()}}
+
+  def handle(%{"command" => "health"}), do: {:ok, Sources.healthz()}
+
+  def handle(%{"command" => "schema", "request" => %{"source" => name}}) do
+    case Sources.schema(name) do
+      {:ok, schema} ->
+        {:ok, schema}
+
+      {:error, :not_found} ->
+        {:error, %{error: "not_found", message: "no such source: #{name}"}}
+
+      {:error, :not_supported} ->
+        {:error,
+         %{
+           error: "not_supported",
+           message: "source #{name} does not support schema discovery"
+         }}
+
+      {:error, reason} ->
+        {:error, %{error: "schema_error", message: inspect(reason)}}
+    end
+  end
+
+  def handle(other) do
+    {:error, %{error: "invalid_query", message: "unrecognized request: #{inspect(other)}"}}
+  end
+
+  # Phase 2: single-source only. Fan-out across multiple sources (merge, rank, budget
+  # shaping) is Phase 5's "query layer" — see .plans/05-roadmap.md.
+  defp run_query(%{sources: [name]} = query) do
+    started = System.monotonic_time(:millisecond)
+
+    case Sources.run_query(name, query) do
+      {:ok, result} ->
+        elapsed = System.monotonic_time(:millisecond) - started
+        {:ok, Response.query_envelope(name, result, query.mode, elapsed, [])}
+
+      {:error, :not_found} ->
+        {:error, %{error: "not_found", message: "no such source: #{name}"}}
+
+      # A backend that failed is a partial answer, not a failed request: the envelope goes
+      # out with the failure in `errors[]`, so a caller still learns which source broke and
+      # what the query compiled to.
+      {:error, reason} ->
+        elapsed = System.monotonic_time(:millisecond) - started
+        empty = %{records: [], native: "", total: 0}
+        error = ResponseError.build(name, reason)
+        {:ok, Response.query_envelope(name, empty, query.mode, elapsed, [error])}
+    end
+  end
+
+  defp run_query(%{sources: nil}) do
+    invalid_query("sources is required in Phase 2 (no fan-out yet) — name exactly one source")
+  end
+
+  defp run_query(%{sources: sources}) when length(sources) != 1 do
+    {:error,
+     %{
+       error: "unsupported",
+       message:
+         "Phase 2 supports exactly one source in `sources` — fan-out across multiple " <>
+           "sources lands in Phase 5 (.plans/05-roadmap.md)"
+     }}
+  end
+
+  defp invalid_query(message), do: {:error, %{error: "invalid_query", message: message}}
+end

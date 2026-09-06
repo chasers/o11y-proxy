@@ -6,19 +6,49 @@ defmodule O11yProxy.Application do
 
   @impl true
   def start(_type, _args) do
+    case O11yProxy.CLI.main(cli_argv()) do
+      :serve -> start_server()
+      status -> System.halt(status)
+    end
+  end
+
+  # Under Mix — `mix run`, `mix test`, `iex -S mix` — the plain arguments belong to Mix,
+  # not to us: `mix test some_test.exs` would otherwise look like a subcommand. Releases
+  # don't ship Mix, which is the same signal keep_alive_if_release/0 uses below.
+  defp cli_argv do
+    if Code.ensure_loaded?(Mix), do: [], else: O11yProxy.CLI.command_argv()
+  end
+
+  @doc """
+  Starts the core supervision tree *without* Bandit, plus the given sources — the CLI's
+  in-process path (`.plans/07-cli.md`). No port is bound, both because a one-shot command
+  needs none and because binding one would collide with a running daemon.
+  """
+  @spec start_core(O11yProxy.Config.t(), [O11yProxy.Config.Source.t()]) ::
+          :ok | {:error, String.t()}
+  def start_core(config, sources) do
+    put_runtime_env(config)
+
+    case Supervisor.start_link(core_children(),
+           strategy: :one_for_one,
+           name: O11yProxy.Supervisor
+         ) do
+      {:ok, _pid} ->
+        O11yProxy.Sources.start_all(sources)
+        :ok
+
+      {:error, reason} ->
+        {:error, "failed to start: #{inspect(reason)}"}
+    end
+  end
+
+  defp start_server do
     config = load_config_or_exit()
+    put_runtime_env(config)
 
-    Application.put_env(:o11y_proxy, :auth, config.server.auth)
-    Application.put_env(:o11y_proxy, :defaults, config.defaults)
-
-    children = [
-      {Registry, keys: :unique, name: O11yProxy.Sources.Registry},
-      O11yProxy.Sources.StateTable,
-      {DynamicSupervisor, strategy: :one_for_one, name: O11yProxy.Sources.Supervisor},
-      {Task.Supervisor, name: O11yProxy.TaskSupervisor},
-      {TelemetryMetricsPrometheus.Core, metrics: O11yProxy.Telemetry.metrics()},
-      {Bandit, plug: O11yProxy.Router, ip: {127, 0, 0, 1}, port: config.server.port}
-    ]
+    children =
+      core_children() ++
+        [{Bandit, plug: O11yProxy.Router, ip: {127, 0, 0, 1}, port: config.server.port}]
 
     opts = [strategy: :one_for_one, name: O11yProxy.Supervisor]
 
@@ -27,6 +57,7 @@ defmodule O11yProxy.Application do
         O11yProxy.Sources.start_all(config.sources)
         Logger.info("o11y-proxy listening on http://127.0.0.1:#{config.server.port}")
         keep_alive_if_release()
+        block_if_bare_argument()
         {:ok, pid}
 
       # Running it twice is an ordinary mistake and deserves an ordinary message, not the
@@ -53,6 +84,23 @@ defmodule O11yProxy.Application do
     end
   end
 
+  # Everything the query path needs. Bandit is the *only* difference between a server and
+  # a CLI run, which is what makes the two paths produce byte-identical output.
+  defp core_children do
+    [
+      {Registry, keys: :unique, name: O11yProxy.Sources.Registry},
+      O11yProxy.Sources.StateTable,
+      {DynamicSupervisor, strategy: :one_for_one, name: O11yProxy.Sources.Supervisor},
+      {Task.Supervisor, name: O11yProxy.TaskSupervisor},
+      {TelemetryMetricsPrometheus.Core, metrics: O11yProxy.Telemetry.metrics()}
+    ]
+  end
+
+  defp put_runtime_env(config) do
+    Application.put_env(:o11y_proxy, :auth, config.server.auth)
+    Application.put_env(:o11y_proxy, :defaults, config.defaults)
+  end
+
   # A release boots via `-noshell -s elixir start_cli`, and Elixir's CLI halts the VM once
   # argv processing finishes — so a server release boots, logs "listening", and exits.
   # `mix release`'s own start script avoids this by passing `--no-halt`; a Burrito binary
@@ -65,6 +113,9 @@ defmodule O11yProxy.Application do
   # halting, runs `at_exit` hooks and calls `System.halt/1`. So an `at_exit` hook is the
   # last point of control before the VM goes down — blocking there is what keeps a server
   # release alive.
+  #
+  # A CLI subcommand never gets here: it halts inside start/2, before `Kernel.CLI` runs at
+  # all, which is also why an unrecognized argument never produces `No file named query`.
   #
   # This does not interfere with shutdown: `at_exit` hooks are a `Kernel.CLI` concept, run
   # once on that startup path. SIGTERM and `:init.stop/0` don't go through them, so
@@ -85,6 +136,37 @@ defmodule O11yProxy.Application do
   defp keep_alive_if_release do
     unless Code.ensure_loaded?(Mix) do
       System.at_exit(fn _status -> Process.sleep(:infinity) end)
+    end
+  end
+
+  # ...but the at_exit hook is not enough on its own, because it is only reached when
+  # `Kernel.CLI` had nothing to complain about. An explicit `o11y-proxy serve` arrives as
+  # a plain argument, becomes `{:file, "serve"}`, and takes the error path in
+  # `Kernel.CLI.main/1` — which calls `System.halt(1)` *inside* the command runner, before
+  # `run/1` ever gets to `at_exit` (see `Kernel.CLI.run/1`). Verified on the built binary:
+  # it logged "listening", printed `No file named serve`, and died.
+  #
+  # So when there are plain arguments at all, don't return. Blocking here means
+  # `Application.start/2` never completes, the boot script never reaches
+  # `-s elixir start_cli`, and `Kernel.CLI` never runs. The supervision tree is already up
+  # and serving — `Supervisor.start_link/2` returned above — and `init` runs the boot
+  # script in a separate process, so it stays responsive and SIGTERM still shuts down
+  # cleanly.
+  #
+  # Only for a *bare word*, which is precisely what becomes `{:file, _}`. A leading `-`
+  # is an option `Kernel.CLI` understands and won't error on — which matters, because the
+  # tarball's `bin/o11y_proxy start` passes `--no-halt`, and blocking there would stop the
+  # application ever reporting itself started. A bare `./o11y-proxy` and `mix run` have no
+  # plain arguments at all and take the at_exit path above. A CLI subcommand reaches
+  # neither: it halts inside `start/2`.
+  #
+  # Note that `--no-halt` does *not* rescue a bare word: `Kernel.CLI.main/1` calls
+  # `System.halt(1)` on a command error unconditionally, before `run/1` consults the flag.
+  defp block_if_bare_argument do
+    bare? = Enum.any?(O11yProxy.CLI.argv(), &(not String.starts_with?(&1, "-")))
+
+    if bare? and not Code.ensure_loaded?(Mix) do
+      Process.sleep(:infinity)
     end
   end
 
