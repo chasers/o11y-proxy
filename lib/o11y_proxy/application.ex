@@ -16,7 +16,7 @@ defmodule O11yProxy.Application do
   # not to us: `mix test some_test.exs` would otherwise look like a subcommand. Releases
   # don't ship Mix, which is the same signal keep_alive_if_release/0 uses below.
   defp cli_argv do
-    if Code.ensure_loaded?(Mix), do: [], else: O11yProxy.CLI.argv()
+    if Code.ensure_loaded?(Mix), do: [], else: O11yProxy.CLI.command_argv()
   end
 
   @doc """
@@ -57,7 +57,7 @@ defmodule O11yProxy.Application do
         O11yProxy.Sources.start_all(config.sources)
         Logger.info("o11y-proxy listening on http://127.0.0.1:#{config.server.port}")
         keep_alive_if_release()
-        block_if_plain_args()
+        block_if_bare_argument()
         {:ok, pid}
 
       # Running it twice is an ordinary mistake and deserves an ordinary message, not the
@@ -153,12 +153,19 @@ defmodule O11yProxy.Application do
   # script in a separate process, so it stays responsive and SIGTERM still shuts down
   # cleanly.
   #
-  # Only when there *are* plain arguments. With none — a bare `./o11y-proxy`, `mix run`,
-  # or the tarball's `bin/o11y_proxy start`, which passes `--no-halt` — `Kernel.CLI` is
-  # harmless, and the at_exit hook above is the less exotic mechanism. A CLI subcommand
-  # never reaches either: it halts inside `start/2`.
-  defp block_if_plain_args do
-    unless Code.ensure_loaded?(Mix) or O11yProxy.CLI.argv() == [] do
+  # Only for a *bare word*, which is precisely what becomes `{:file, _}`. A leading `-`
+  # is an option `Kernel.CLI` understands and won't error on — which matters, because the
+  # tarball's `bin/o11y_proxy start` passes `--no-halt`, and blocking there would stop the
+  # application ever reporting itself started. A bare `./o11y-proxy` and `mix run` have no
+  # plain arguments at all and take the at_exit path above. A CLI subcommand reaches
+  # neither: it halts inside `start/2`.
+  #
+  # Note that `--no-halt` does *not* rescue a bare word: `Kernel.CLI.main/1` calls
+  # `System.halt(1)` on a command error unconditionally, before `run/1` consults the flag.
+  defp block_if_bare_argument do
+    bare? = Enum.any?(O11yProxy.CLI.argv(), &(not String.starts_with?(&1, "-")))
+
+    if bare? and not Code.ensure_loaded?(Mix) do
       Process.sleep(:infinity)
     end
   end

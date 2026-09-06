@@ -64,6 +64,29 @@ defmodule O11yProxy.CLI do
   @spec argv() :: [String.t()]
   def argv, do: Enum.map(:init.get_plain_arguments(), &to_string/1)
 
+  @doc """
+  The arguments that are *ours*, or `[]` when this VM's arguments belong to Elixir.
+
+  Not everything in `:init.get_plain_arguments/0` was typed by the user. A release start
+  script runs `elixir --no-halt …` (see `bin/o11y_proxy`), and that `--no-halt` arrives
+  here looking exactly like a subcommand would — which made `bin/o11y_proxy start` fail
+  with `unknown command: --no-halt` until this existed.
+
+  So: anything beginning with `-` belongs to `Kernel.CLI`, not to us, and means "no
+  command was given" — the server. The exception is the four flags we deliberately take
+  over, because `Kernel.CLI` would otherwise swallow them. A bare word is always ours: it
+  is a subcommand, or a typo of one that deserves a real error rather than a silent server
+  start.
+  """
+  @spec command_argv() :: [String.t()]
+  def command_argv, do: command_argv(argv())
+
+  @doc "`command_argv/0` against a given argv. Separated so it's testable without a VM."
+  @spec command_argv([String.t()]) :: [String.t()]
+  def command_argv([flag | _] = args) when flag in ["-h", "--help", "-v", "--version"], do: args
+  def command_argv(["-" <> _ | _]), do: []
+  def command_argv(args), do: args
+
   defp run(command) do
     case ensure_core(command) do
       :ok ->

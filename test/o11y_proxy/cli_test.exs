@@ -44,6 +44,32 @@ defmodule O11yProxy.CLITest do
     end
   end
 
+  # A release start script runs `elixir --no-halt …` (see `bin/o11y_proxy`), and that
+  # `--no-halt` lands in :init.get_plain_arguments/0 looking exactly like a subcommand.
+  # `bin/o11y_proxy start` failed with `unknown command: --no-halt` until this existed.
+  describe "command_argv/0 separates our arguments from Elixir's" do
+    test "a leading Kernel.CLI option means no command was given — the server" do
+      assert CLI.command_argv(["--no-halt"]) == []
+      assert CLI.command_argv(["--no-halt", "--pipe-to", "/tmp/pipe", "/tmp/log"]) == []
+      assert CLI.command_argv(["-e", "IO.puts 1"]) == []
+    end
+
+    test "the four flags Kernel.CLI would swallow are still ours" do
+      for flag <- ["-h", "--help", "-v", "--version"],
+          do: assert(CLI.command_argv([flag]) == [flag])
+    end
+
+    test "a bare word is always ours — a subcommand, or a typo worth an error" do
+      assert CLI.command_argv(["sources"]) == ["sources"]
+      assert CLI.command_argv(["query", "--source", "x"]) == ["query", "--source", "x"]
+      assert CLI.command_argv(["quesry"]) == ["quesry"]
+    end
+
+    test "no arguments is the server" do
+      assert CLI.command_argv([]) == []
+    end
+  end
+
   describe "commands against real sources" do
     test "sources lists what's configured" do
       name = start_fake_source!()
