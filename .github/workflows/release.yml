@@ -1,9 +1,24 @@
 name: Publish release binaries
 
-# Fires when a release is *published* on GitHub (not on tag push, so drafts can be
-# prepared without kicking off a build). Builds the Burrito single-file executables and
-# attaches them to that release.
+# Two ways in, both ending in the same place — binaries built, smoke-tested, and attached
+# to a `v<version>` release:
+#
+#   * **a version bump landing on `main`** (the normal path). Bumping `version:` in
+#     `mix.exs` is the whole ritual; this creates the release and builds it.
+#   * **publishing a release by hand**, for a tag prepared as a draft.
+#
+# The release is *created here* rather than by a separate workflow, and that is not a
+# stylistic choice: a release created with the built-in `GITHUB_TOKEN` does not trigger
+# other workflows (GitHub's loop prevention), so a "create the release" workflow feeding a
+# "build the binaries" workflow would create releases nothing ever builds. One workflow,
+# one token, no PAT.
+#
+# Order matters too: build and smoke-test *first*, create the release *last*. A failed
+# build leaves no release at all, rather than an empty one someone has to clean up.
 on:
+  push:
+    branches: [main]
+    paths: [mix.exs]
   release:
     types: [published]
   # Manual re-run, e.g. if a build failed and the release already exists.
@@ -14,10 +29,50 @@ on:
         required: true
 
 permissions:
-  contents: write # required to upload assets onto the release
+  contents: write # required to create a release and upload assets onto it
 
 jobs:
+  # Cheap gate: a push touching mix.exs is usually a dependency change, not a release.
+  # Work out the tag and whether there is anything to do before booking a 5-minute build.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      build: ${{ steps.resolve.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            release)           tag="$RELEASE_TAG" ;;
+            workflow_dispatch) tag="$INPUT_TAG" ;;
+            push)
+              version=$(grep -m1 'version: "' mix.exs | sed 's/.*version: "\([^"]*\)".*/\1/')
+              tag="v$version"
+              ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          # Only the push path can be a no-op: `release`/`workflow_dispatch` were asked
+          # for explicitly, so they always build even if the release already exists.
+          if [ "$EVENT" = "push" ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag is already released — mix.exs changed for some other reason."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "will build $tag"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -179,10 +234,29 @@ jobs:
           echo "\`serve\` never answered on /healthz" >&2
           cat serve.log >&2
           exit 1
+      # Only now that every artifact has booted and answered. On the push path this is
+      # what creates the release; on the other two it already exists and this is a no-op.
+      - name: Create the release if it doesn't exist yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG already exists — uploading into it"
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --generate-notes
+            echo "created $TAG at $GITHUB_SHA"
+          fi
+
       - name: Attach binaries to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           ls -la burrito_out/
