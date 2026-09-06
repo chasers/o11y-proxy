@@ -1,0 +1,41 @@
+# o11y-proxy config. Safe to commit: secrets are only ever ${ENV_VAR} references, never
+# literals. See .plans/02-backend-behaviour.md for the full format.
+#
+# Override this file's location with O11Y_PROXY_CONFIG, or drop one at
+# ~/.config/o11y-proxy/config.yaml.
+
+server:
+  port: 4000
+  auth: none # none | token — 'token' is the shared-deployment seam, see 04-cross-cutting.md
+
+defaults:
+  limit: 50
+  max_window: 7d
+  timeout: 30s
+
+# No sources yet — Phase 1 is the skeleton (see .plans/05-roadmap.md); adapters land in
+# Phase 2 (ClickHouse), Phase 3 (VictoriaMetrics), Phase 4 (Sentry). Once an adapter
+# exists, a source block looks like this (from .plans/02-backend-behaviour.md):
+#
+# sources:
+#   - name: app_logs
+#     backend: clickhouse
+#     signal: logs
+#     url: ${CLICKHOUSE_URL}
+#     user: ${CLICKHOUSE_USER}
+#     password: ${CLICKHOUSE_PASSWORD}
+#     database: otel
+#     table: otel_logs
+#     allow_raw: true
+#     mapping:
+#       timestamp: Timestamp
+#       severity: SeverityText
+#       body: Body
+#       service: ServiceName
+#       trace_id: TraceId
+#       span_id: SpanId
+#       attributes: LogAttributes
+#     hints:
+#       partition_key: Timestamp
+#       low_cardinality: [ServiceName, SeverityText]
+sources: []

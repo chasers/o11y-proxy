@@ -1,0 +1,64 @@
+# Real, runnable example config against the docker-compose ClickHouse (see
+# docker-compose.yml + seed.sh). Point at it with:
+#   O11Y_PROXY_CONFIG=docker/o11y.yaml mix run --no-halt
+
+server:
+  port: 4000
+  auth: none
+
+defaults:
+  limit: 50
+  max_window: 7d
+  timeout: 30s
+
+sources:
+  - name: app_logs
+    backend: clickhouse
+    signal: logs
+    url: http://localhost:8123
+    user: default
+    password: ""
+    database: otel_test
+    table: otel_logs
+    allow_raw: true
+    mapping:
+      timestamp: Timestamp
+      severity: SeverityText
+      body: Body
+      service: ServiceName
+      trace_id: TraceId
+      span_id: SpanId
+      attributes: LogAttributes
+    hints:
+      partition_key: Timestamp
+      low_cardinality: [ServiceName, SeverityText]
+
+  # Same adapter, different table/mapping — "source vs backend" from .plans/00-overview.md.
+  # Traces have no native severity column, so `severity` maps onto StatusCode
+  # ("Ok"/"Error"/"Unset", per seed.sh) instead of a text level.
+  - name: otel_traces
+    backend: clickhouse
+    signal: traces
+    url: http://localhost:8123
+    user: default
+    password: ""
+    database: otel_test
+    table: otel_traces
+    allow_raw: true
+    mapping:
+      timestamp: Timestamp
+      severity: StatusCode
+      body: SpanName
+      service: ServiceName
+      trace_id: TraceId
+      span_id: SpanId
+      attributes: SpanAttributes
+    hints:
+      partition_key: Timestamp
+      low_cardinality: [ServiceName, StatusCode]
+
+  - name: prod_metrics
+    backend: victoriametrics
+    signal: metrics
+    url: http://localhost:8428
+    allow_raw: true
