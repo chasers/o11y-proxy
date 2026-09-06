@@ -231,24 +231,25 @@ defmodule O11yProxy.CLI.Args do
   end
 
   defp split_on_operator(raw) do
-    graphemes_length = String.length(raw)
+    last_index = max(String.length(raw) - 1, 0)
 
-    found =
-      Enum.find_value(0..max(graphemes_length - 1, 0), fn index ->
-        rest = String.slice(raw, index..-1//1)
-
-        Enum.find_value(@filter_ops, fn {token, op} ->
-          if String.starts_with?(rest, token) do
-            {String.slice(raw, 0, index), op,
-             String.slice(rest, String.length(token)..-1//1) || ""}
-          end
-        end)
-      end)
-
-    case found do
+    case Enum.find_value(0..last_index, &operator_at(raw, &1)) do
       {field, op, value} -> {:ok, field, op, value}
       nil -> if String.ends_with?(raw, "?"), do: :exists, else: :none
     end
+  end
+
+  # The operator token starting at `index`, longest first, or nil if none starts there.
+  defp operator_at(raw, index) do
+    rest = String.slice(raw, index..-1//1)
+
+    Enum.find_value(@filter_ops, fn {token, op} ->
+      if String.starts_with?(rest, token) do
+        # String.slice/2 returns "" past the end, never nil — no `|| ""` needed.
+        value = String.slice(rest, String.length(token)..-1//1)
+        {String.slice(raw, 0, index), op, value}
+      end
+    end)
   end
 
   # A shell has no types, but the backends do: `attributes.duration_ms>=1000` against a

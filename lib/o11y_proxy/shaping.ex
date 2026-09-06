@@ -93,13 +93,13 @@ defmodule O11yProxy.Shaping do
       end
     end)
     |> then(fn {order, groups} ->
-      order
-      |> Enum.reverse()
-      |> Enum.map(fn key ->
-        {_index, %{record: record, count: count}} = Map.fetch!(groups, key)
-        if count > 1, do: put_duplicate_count(record, count), else: record
-      end)
+      order |> Enum.reverse() |> Enum.map(&rebuild_group(groups, &1))
     end)
+  end
+
+  defp rebuild_group(groups, key) do
+    {_index, %{record: record, count: count}} = Map.fetch!(groups, key)
+    if count > 1, do: put_duplicate_count(record, count), else: record
   end
 
   defp put_duplicate_count(record, count) do
@@ -192,15 +192,13 @@ defmodule O11yProxy.Shaping do
     size = byte_size(Jason.encode!(response))
     total = total_items(response, list_keys)
 
-    cond do
-      size <= max_bytes or total == 0 ->
-        response
-
-      true ->
-        # Keep a proportional share of what's there, minus a little slack for the
-        # envelope's fixed overhead; never fewer than one fewer than we have now.
-        keep = min(total - 1, max(0, floor(total * max_bytes / size) - 1))
-        response |> trim_to(list_keys, keep) |> trim_until_fits(list_keys, max_bytes)
+    if size <= max_bytes or total == 0 do
+      response
+    else
+      # Keep a proportional share of what's there, minus a little slack for the
+      # envelope's fixed overhead; never fewer than one fewer than we have now.
+      keep = min(total - 1, max(0, floor(total * max_bytes / size) - 1))
+      response |> trim_to(list_keys, keep) |> trim_until_fits(list_keys, max_bytes)
     end
   end
 
@@ -222,7 +220,7 @@ defmodule O11yProxy.Shaping do
     max_len = Enum.max(lengths, fn -> 0 end)
 
     Enum.reduce_while(0..max_len//1, 0, fn cap, last_fitting ->
-      capped_total = Enum.sum(Enum.map(lengths, &min(&1, cap)))
+      capped_total = Enum.sum_by(lengths, &min(&1, cap))
       if capped_total > keep, do: {:halt, last_fitting}, else: {:cont, cap}
     end)
   end

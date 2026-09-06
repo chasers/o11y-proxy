@@ -62,6 +62,9 @@ defmodule O11yProxy.BackendCase do
     quote do
       use ExUnit.Case, async: true
 
+      alias O11yProxy.Query
+      alias O11yProxy.Query.Filter
+
       if unquote(moduletag) do
         @moduletag unquote(moduletag)
       end
@@ -99,9 +102,9 @@ defmodule O11yProxy.BackendCase do
         state = init_state()
         caps = @backend.capabilities(state)
 
-        assert Enum.all?(caps.signals, &(&1 in O11yProxy.Query.signals()))
-        assert Enum.all?(caps.modes, &(&1 in O11yProxy.Query.modes()))
-        assert Enum.all?(caps.operators, &(&1 in O11yProxy.Query.Filter.operators()))
+        assert Enum.all?(caps.signals, &(&1 in Query.signals()))
+        assert Enum.all?(caps.modes, &(&1 in Query.modes()))
+        assert Enum.all?(caps.operators, &(&1 in Filter.operators()))
         assert is_boolean(caps.raw)
       end
 
@@ -132,7 +135,7 @@ defmodule O11yProxy.BackendCase do
       test "compile/2 rejects an unsupported operator instead of silently dropping it" do
         state = init_state()
         caps = @backend.capabilities(state)
-        unsupported = O11yProxy.Query.Filter.operators() -- caps.operators
+        unsupported = Filter.operators() -- caps.operators
 
         # An adapter that genuinely expresses all eight canonical operators (ClickHouse
         # does) has nothing to reject, so this check has nothing to bite on. That's

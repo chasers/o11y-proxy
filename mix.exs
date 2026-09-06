@@ -9,8 +9,16 @@ defmodule O11yProxy.MixProject do
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
-      releases: releases()
+      aliases: aliases(),
+      releases: releases(),
+      dialyzer: [plt_local_path: "priv/plts", plt_core_path: "priv/plts"]
     ]
+  end
+
+  # `precommit` and `ci` are test-env so they compile and lint the test tree too — a
+  # warning or a Credo finding in test/ should fail the same gate that catches one in lib/.
+  def cli do
+    [preferred_envs: [precommit: :test, ci: :test]]
   end
 
   # Single-file executables via Burrito — `.plans/05-roadmap.md` Phase 6's "installable".
@@ -68,7 +76,43 @@ defmodule O11yProxy.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_metrics_prometheus_core, "~> 1.1"},
       {:telemetry_poller, "~> 1.1"},
-      {:burrito, "~> 1.6", runtime: false}
+      {:burrito, "~> 1.6", runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false},
+      {:reach, "~> 2.7", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  # Two gates, deliberately different:
+  #
+  #   * `precommit` is local and *mutating* — it formats and prunes rather than complaining
+  #     that you should have. Run it before pushing.
+  #   * `ci` is a non-mutating superset: the same checks in --check mode, plus the audits
+  #     and the architecture/smell policy. It must never write to the working tree, so a
+  #     CI failure is always about the code and never about CI having edited it.
+  defp aliases do
+    [
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "credo --strict",
+        "ex_dna",
+        "test"
+      ],
+      ci: [
+        "hex.audit",
+        "compile --warnings-as-errors",
+        "deps.unlock --check-unused",
+        "format --check-formatted",
+        "credo --strict",
+        "deps.audit",
+        "ex_dna",
+        "reach.check --arch --smells --strict --baseline .reach.baseline.json"
+      ]
     ]
   end
 end

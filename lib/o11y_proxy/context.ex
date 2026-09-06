@@ -27,8 +27,8 @@ defmodule O11yProxy.Context do
   adapter existed, and `.plans/05-roadmap.md` calls out keeping it.
   """
 
-  alias O11yProxy.Query.Filter
   alias O11yProxy.{Query, ResponseError, Sources}
+  alias O11yProxy.Query.Filter
 
   # The caller gives no window for a trace_id/error_id lookup, but ClickHouse (rightly)
   # refuses to run unbounded — so correlation searches back this far by default.
@@ -70,25 +70,30 @@ defmodule O11yProxy.Context do
     service = presence(params["service"])
     from = presence(params["from"])
     to = presence(params["to"])
+    # "Any of service/from/to" is what makes a request *ambiguous* with a trace or error
+    # anchor, while only the complete triple is a usable entry — so a lone `service` is
+    # neither ambiguous nor valid, and lands on :empty_request below.
     window? = not is_nil(service) or not is_nil(from) or not is_nil(to)
 
-    cond do
-      (trace_id && error_id) || (trace_id && window?) || (error_id && window?) ->
-        {:error, :ambiguous_request}
-
-      trace_id ->
-        {:ok, {:trace_id, trace_id}}
-
-      error_id ->
-        {:ok, {:error_id, error_id}}
-
-      service && from && to ->
-        {:ok, {:service_window, service, from, to}}
-
-      true ->
-        {:error, :empty_request}
+    case Enum.count([not is_nil(trace_id), not is_nil(error_id), window?], & &1) do
+      0 -> {:error, :empty_request}
+      1 -> entry(trace_id, error_id, {service, from, to})
+      _ -> {:error, :ambiguous_request}
     end
   end
+
+  defp entry(trace_id, _error_id, _window) when is_binary(trace_id),
+    do: {:ok, {:trace_id, trace_id}}
+
+  defp entry(_trace_id, error_id, _window) when is_binary(error_id),
+    do: {:ok, {:error_id, error_id}}
+
+  defp entry(_trace_id, _error_id, {service, from, to})
+       when is_binary(service) and is_binary(from) and is_binary(to),
+       do: {:ok, {:service_window, service, from, to}}
+
+  # An incomplete window — `service` with no `from`, say. Nothing to correlate on.
+  defp entry(_trace_id, _error_id, _window), do: {:error, :empty_request}
 
   defp presence(value) when is_binary(value),
     do: if(String.trim(value) == "", do: nil, else: value)
@@ -206,8 +211,10 @@ defmodule O11yProxy.Context do
 
     with service when is_binary(service) <- pick_service(records),
          [_ | _] = timestamps <- parse_timestamps(records) do
-      {service, DateTime.add(Enum.min(timestamps, DateTime), -@window_padding_seconds, :second),
-       DateTime.add(Enum.max(timestamps, DateTime), @window_padding_seconds, :second)}
+      {earliest, latest} = Enum.min_max_by(timestamps, & &1, DateTime)
+
+      {service, DateTime.add(earliest, -@window_padding_seconds, :second),
+       DateTime.add(latest, @window_padding_seconds, :second)}
     else
       _ -> nil
     end
@@ -223,19 +230,17 @@ defmodule O11yProxy.Context do
   end
 
   defp parse_timestamps(records) do
-    Enum.flat_map(records, fn {_signal, record} ->
-      case record do
-        %{timestamp: ts} when is_binary(ts) ->
-          case DateTime.from_iso8601(ts) do
-            {:ok, dt, _offset} -> [dt]
-            _ -> []
-          end
-
-        _ ->
-          []
-      end
-    end)
+    Enum.flat_map(records, fn {_signal, record} -> parse_timestamp(record) end)
   end
+
+  defp parse_timestamp(%{timestamp: ts}) when is_binary(ts) do
+    case DateTime.from_iso8601(ts) do
+      {:ok, dt, _offset} -> [dt]
+      _ -> []
+    end
+  end
+
+  defp parse_timestamp(_record), do: []
 
   # -- per-source query building --------------------------------------------------------
 
@@ -319,9 +324,14 @@ defmodule O11yProxy.Context do
       case fetch_source_error(source, error_id, per_source) do
         {:ok, record} -> {:halt, {:ok, %{record | source: source.name}}}
         {:error, :not_found} -> {:cont, {:error, failures}}
-        {:error, reason} -> {:cont, {:error, failures ++ [{source.name, reason}]}}
+        {:error, reason} -> {:cont, {:error, [{source.name, reason} | failures]}}
       end
     end)
+    |> case do
+      {:ok, _record} = ok -> ok
+      # Reversed because failures were prepended: callers report them in source order.
+      {:error, failures} -> {:error, Enum.reverse(failures)}
+    end
   end
 
   defp fetch_source_error(source, error_id, timeout) do

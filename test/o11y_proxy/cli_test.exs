@@ -106,7 +106,7 @@ defmodule O11yProxy.CLITest do
                run(~w(query --source #{name} --signal logs --from now-1h --to now --mode sample))
 
       assert %{"data" => data, "meta" => meta, "errors" => []} = Jason.decode!(output)
-      assert length(data) == 2
+      assert [_, _] = data
       assert Enum.all?(data, &(&1["source"] == name))
       assert meta["sources_queried"] == [name]
       assert meta["native_queries"][name] =~ "SELECT"
@@ -184,7 +184,7 @@ defmodule O11yProxy.CLITest do
     test "the default is compact JSON on one line, so `| jq` gets a clean stream" do
       _name = start_fake_source!()
       assert {output, 0} = run(["sources"])
-      assert length(String.split(String.trim(output), "\n")) == 1
+      refute output |> String.trim() |> String.contains?("\n")
     end
 
     test "--pretty indents it" do

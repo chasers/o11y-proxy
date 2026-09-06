@@ -99,7 +99,7 @@ defmodule O11yProxy.Backends.Sentry.SearchTest do
           |> String.replace("\\\\", "")
           |> String.replace("\\\"", "")
 
-        assert stripped |> String.graphemes() |> Enum.count(&(&1 == "\"")) == 2,
+        assert stripped |> String.replace(~r/[^"]/, "") |> String.length() == 2,
                "hostile value #{inspect(value)} forged an extra quote in: #{inspect(query)}"
       end
     end

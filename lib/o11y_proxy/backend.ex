@@ -1,6 +1,6 @@
 defmodule O11yProxy.Backend do
   @moduledoc """
-  The plugin contract every adapter (ClickHouse, VictoriaMetrics, Sentry, ...) implements.
+  Every adapter (ClickHouse, VictoriaMetrics, Sentry, ...) implements these callbacks.
   See `.plans/02-backend-behaviour.md` for the design rationale — in particular, why
   `compile/2` and `execute/2` are separate callbacks: compilation is pure, carries all the
   injection/correctness risk, and is the seam that makes `meta.native_queries` and

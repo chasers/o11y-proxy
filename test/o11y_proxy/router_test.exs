@@ -87,7 +87,7 @@ defmodule O11yProxy.RouterTest do
 
     assert conn.status == 200
     assert %{"data" => data, "meta" => meta, "errors" => []} = Jason.decode!(conn.resp_body)
-    assert length(data) == 2
+    assert [_, _] = data
     assert Enum.all?(data, &(&1["source"] == name))
     assert meta["sources_queried"] == [name]
     assert meta["native_queries"][name] =~ "SELECT"
@@ -118,8 +118,8 @@ defmodule O11yProxy.RouterTest do
       assert %{"trace" => trace, "logs" => log_records, "meta" => meta, "errors" => []} =
                Jason.decode!(conn.resp_body)
 
-      assert length(trace) > 0
-      assert length(log_records) > 0
+      assert [_ | _] = trace
+      assert [_ | _] = log_records
       assert Enum.all?(trace, &(&1["source"] == traces))
       assert Enum.all?(log_records, &(&1["source"] == logs))
       assert Enum.sort(meta["sources_queried"]) == Enum.sort([logs, traces])
@@ -136,7 +136,7 @@ defmodule O11yProxy.RouterTest do
       assert %{"logs" => log_records, "trace" => [], "errors" => [error]} =
                Jason.decode!(conn.resp_body)
 
-      assert length(log_records) > 0
+      assert [_ | _] = log_records
       assert error["source"] == broken
       assert error["code"] == "internal"
       assert Enum.all?(log_records, &(&1["source"] == healthy))
@@ -152,7 +152,7 @@ defmodule O11yProxy.RouterTest do
       assert %{"error" => error, "logs" => log_records} = Jason.decode!(conn.resp_body)
       assert error["body"] =~ "everything is on fire"
       assert error["trace_id"] == "abc123"
-      assert length(log_records) > 0
+      assert [_ | _] = log_records
       assert Enum.all?(log_records, &(&1["source"] == logs))
     end
 
@@ -184,7 +184,7 @@ defmodule O11yProxy.RouterTest do
 
       assert conn.status == 200
       assert %{"logs" => log_records, "meta" => meta} = Jason.decode!(conn.resp_body)
-      assert length(log_records) > 0
+      assert [_ | _] = log_records
       assert meta["sources_queried"] == [logs]
     end
   end
