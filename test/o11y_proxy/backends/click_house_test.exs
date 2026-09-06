@@ -15,6 +15,10 @@ defmodule O11yProxy.Backends.ClickHouseTest do
   use O11yProxy.BackendCase,
     backend: O11yProxy.Backends.ClickHouse,
     moduletag: :clickhouse,
+    # SQL genuinely expresses all eight canonical operators — confirmed by running this
+    # suite against a real ClickHouse, which is also what surfaced that BackendCase used
+    # to *require* every adapter to leave at least one unsupported.
+    all_operators_supported: true,
     valid_config: [
       url: "http://localhost:8123",
       user: "default",

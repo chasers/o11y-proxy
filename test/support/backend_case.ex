@@ -27,6 +27,11 @@ defmodule O11yProxy.BackendCase do
       Override it for an adapter whose signal has no `body` (e.g. metrics — use
       `"labels.foo"`), so those tests actually exercise operator/value handling instead
       of failing on an unmapped field for an unrelated reason
+    * `:all_operators_supported` — optional, defaults to `false`. Set it when an adapter
+      genuinely expresses every canonical operator (ClickHouse does), which leaves the
+      "rejects an unsupported operator" test nothing to reject. It's an explicit claim
+      rather than a silent skip: with the flag set, that test asserts the claim still
+      holds, so it fails if the adapter later stops supporting one
 
   The three predicates are genuine functions, not data, so they're spliced into each
   test's body as source (`unquote/1`) rather than carried through a module attribute —
@@ -52,6 +57,7 @@ defmodule O11yProxy.BackendCase do
 
     moduletag = Keyword.get(opts, :moduletag)
     probe_field = Keyword.get(opts, :probe_field, "body")
+    all_operators_supported = Keyword.get(opts, :all_operators_supported, false)
 
     quote do
       use ExUnit.Case, async: true
@@ -128,9 +134,20 @@ defmodule O11yProxy.BackendCase do
         caps = @backend.capabilities(state)
         unsupported = O11yProxy.Query.Filter.operators() -- caps.operators
 
-        assert unsupported != [],
-               "this adapter declares support for every operator — add a fixture gap or " <>
-                 "confirm that's really true before relying on this test"
+        # An adapter that genuinely expresses all eight canonical operators (ClickHouse
+        # does) has nothing to reject, so this check has nothing to bite on. That's
+        # allowed, but only as a deliberate claim: `all_operators_supported: true` in the
+        # test file. The assertion then flips to verifying the claim is still true, so the
+        # flag can't quietly outlive an adapter dropping an operator later.
+        if unquote(all_operators_supported) do
+          assert unsupported == [],
+                 "this adapter passes all_operators_supported: true but does not declare " <>
+                   "#{inspect(unsupported)} — drop the flag or restore the operators"
+        else
+          assert unsupported != [],
+                 "this adapter declares support for every operator — add a fixture gap, or " <>
+                   "pass all_operators_supported: true to confirm that's really true"
+        end
 
         base = hd(@queries)
 

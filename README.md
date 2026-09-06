@@ -62,10 +62,12 @@ docker compose -f docker/docker-compose.yml up -d
 O11Y_PROXY_CONFIG=docker/o11y.yaml mix run --no-halt
 ```
 
-Worth knowing: the Sentry adapter has been exercised end-to-end against a real org, but
-the ClickHouse and VictoriaMetrics adapters have only ever run against their contract
-tests — no one has yet run the docker path above start to finish. If it fights you,
-that's the likeliest reason, and `.plans/05-roadmap.md` tracks it.
+All three adapters have now been verified against real backends — ClickHouse 24.8 and
+VictoriaMetrics v1.102.0 (the versions this compose file pins) and a live Sentry org,
+with the full suite green against all three at once. The `docker/` compose file itself is
+the one piece still unexercised: the verification ran the same two servers as standalone
+binaries, since this repo's dev sandbox has no container runtime. `seed.sh` and
+`seed-vm.sh` did run unmodified against them.
 
 ### First calls
 
