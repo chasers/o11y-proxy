@@ -45,6 +45,7 @@ defmodule O11yProxy.Application do
   defp start_server do
     config = load_config_or_exit()
     put_runtime_env(config)
+    start_distribution(config)
 
     children =
       core_children() ++
@@ -94,6 +95,42 @@ defmodule O11yProxy.Application do
       {Task.Supervisor, name: O11yProxy.TaskSupervisor},
       {TelemetryMetricsPrometheus.Core, metrics: O11yProxy.Telemetry.metrics()}
     ]
+  end
+
+  # Distribution isn't on by default: Burrito's launcher passes `-setcookie` but no
+  # `-name`/`-sname`, and the release vm.args sets neither, so the binary otherwise runs
+  # as :nonode@nohost. Starting it here is what lets a CLI invocation find this daemon and
+  # reuse its warm connections instead of paying a cold start (`.plans/07-cli.md`).
+  #
+  # Failure is not fatal. A daemon that cannot start distribution — no epmd, a port
+  # already taken, a hostile sandbox — still serves HTTP perfectly well; the only cost is
+  # that CLI invocations run in-process. Log it and carry on rather than refusing to boot
+  # over a convenience feature.
+  #
+  # Not under Mix, though. Distribution exists purely so a CLI *binary* can find a daemon,
+  # and a binary's cookie never matches a `mix run` one anyway — so starting it here would
+  # buy nothing and cost plenty: `mix test` would spawn epmd, become a named node, and
+  # collide with a real daemon on the same port whenever a developer had one running.
+  defp start_distribution(%{server: %{distribution: false}}), do: :ok
+
+  defp start_distribution(config) do
+    unless Code.ensure_loaded?(Mix) do
+      node = O11yProxy.Remote.node_name(config)
+
+      case O11yProxy.Remote.start_distribution(node) do
+        # `node()`, not `node` — a tarball release is already distributed under the name its
+        # start script chose, in which case start_distribution/1 succeeds without renaming
+        # anything and the derived name would be a lie.
+        :ok ->
+          Logger.info("o11y-proxy node #{node()} — the CLI will use this daemon")
+
+        {:error, reason} ->
+          Logger.warning(
+            "o11y-proxy could not start Erlang distribution (#{inspect(reason)}); " <>
+              "the CLI will run its commands in-process"
+          )
+      end
+    end
   end
 
   defp put_runtime_env(config) do

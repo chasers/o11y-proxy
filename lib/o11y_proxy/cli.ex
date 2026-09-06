@@ -33,6 +33,10 @@ defmodule O11yProxy.CLI do
 
   alias O11yProxy.CLI.Args
 
+  # Generous on purpose: the daemon may legitimately be waiting on a slow backend, and its
+  # own per-source deadlines are what should decide when a query gives up — not this hop.
+  @call_timeout 60_000
+
   @doc """
   argv → an exit status, or `:serve` when the arguments name the server.
 
@@ -87,17 +91,64 @@ defmodule O11yProxy.CLI do
   def command_argv(["-" <> _ | _]), do: []
   def command_argv(args), do: args
 
+  # Under `mix run`/`mix test` the whole tree is already up, sources and all. Use it
+  # directly: a test driving main/1 wants the sources it registered, not a second copy
+  # started from whatever o11y.yaml is in the working directory, and certainly not a
+  # daemon on someone's machine.
   defp run(command) do
-    case ensure_core(command) do
+    if core_running?() do
+      command |> request() |> O11yProxy.Remote.handle() |> emit(command)
+    else
+      standalone(command)
+    end
+  end
+
+  defp standalone(command) do
+    with {:ok, config} <- load_config() do
+      case connect(config) do
+        {:ok, node} -> via_daemon(node, command, config)
+        {:fallback, reason} -> in_process(command, config, reason)
+      end
+    else
+      {:error, message} -> fail(message)
+    end
+  end
+
+  defp via_daemon(node, command, config) do
+    request = request(command)
+
+    try do
+      :erpc.call(node, O11yProxy.Remote, :handle, [request], @call_timeout)
+    rescue
+      # The daemon was there a moment ago and isn't now, or the call blew up inside it.
+      # Falling back beats handing the user an Erlang term: the in-process path always
+      # produces the correct answer, just more slowly.
+      error -> {:fallback, {:call_failed, Exception.message(error)}}
+    end
+    |> case do
+      {:fallback, reason} -> in_process(command, config, reason)
+      result -> emit(result, command)
+    end
+  end
+
+  defp in_process(command, config, reason) do
+    case O11yProxy.Application.start_core(config, sources_for(command, config)) do
       :ok ->
-        %{"command" => Atom.to_string(command.command), "request" => command.request}
-        |> O11yProxy.Remote.handle()
-        |> emit(command)
+        status = command |> request() |> O11yProxy.Remote.handle() |> emit(command)
+        note(reason, command)
+        status
 
       {:error, message} ->
-        IO.puts(:stderr, "o11y-proxy: " <> message)
-        1
+        fail(message)
     end
+  end
+
+  defp request(command),
+    do: %{"command" => Atom.to_string(command.command), "request" => command.request}
+
+  defp fail(message) do
+    IO.puts(:stderr, "o11y-proxy: " <> message)
+    1
   end
 
   # `{:ok, _}` is exit 0 even when the body carries entries in `errors[]` — that's a
@@ -117,20 +168,92 @@ defmodule O11yProxy.CLI do
   defp encode(body, true), do: Jason.encode!(body, pretty: true)
   defp encode(body, false), do: Jason.encode!(body)
 
-  # Under `mix run`/`mix test` the whole tree is already up, sources and all, and a test
-  # driving main/1 wants the sources it registered — not a second copy started from
-  # whatever o11y.yaml happens to be in the working directory.
-  defp ensure_core(command) do
-    if core_running?() do
-      :ok
+  defp core_running?, do: is_pid(Process.whereis(O11yProxy.Sources.Supervisor))
+
+  # Connect, or say why not. Every `{:fallback, _}` is a normal outcome, never an error:
+  # the in-process path produces the same answer, so a missing or mismatched daemon must
+  # never turn into a failed command.
+  defp connect(%{server: %{distribution: false}}), do: {:fallback, :disabled}
+
+  defp connect(config) do
+    daemon = O11yProxy.Remote.node_name(config)
+
+    with :ok <- start_distribution(),
+         true <- Node.connect(daemon) do
+      check_protocol(daemon)
     else
-      with {:ok, config} <- load_config() do
-        O11yProxy.Application.start_core(config, sources_for(command, config))
-      end
+      {:error, reason} -> {:fallback, {:no_distribution, reason}}
+      # `false` (no such node) and `:ignored` (our own distribution went away).
+      _ -> {:fallback, :no_daemon}
     end
   end
 
-  defp core_running?, do: is_pid(Process.whereis(O11yProxy.Sources.Supervisor))
+  # A throwaway name per invocation, unique across concurrent CLI runs — the OS pid alone
+  # is not enough, since a pid is reused once the process that held it exits.
+  defp start_distribution do
+    unique = System.unique_integer([:positive])
+    O11yProxy.Remote.start_distribution(:"o11y_cli_#{System.pid()}_#{unique}@127.0.0.1")
+  end
+
+  # Version skew is contained by checking the *protocol* number, not the app version: it
+  # moves only when handle/1's contract does, so an 0.1.0 CLI keeps using an 0.1.4 daemon
+  # instead of cold-starting on every patch release. A daemon predating this feature has
+  # no protocol_version/0 at all, which :erpc raises on — also a fallback, not a crash.
+  defp check_protocol(daemon) do
+    ours = O11yProxy.Remote.protocol_version()
+
+    case :erpc.call(daemon, O11yProxy.Remote, :protocol_version, [], @call_timeout) do
+      ^ours -> {:ok, daemon}
+      theirs -> {:fallback, {:protocol_mismatch, ours, theirs}}
+    end
+  rescue
+    _ -> {:fallback, {:protocol_unknown, O11yProxy.Remote.protocol_version()}}
+  end
+
+  # Nothing in the output reveals that a command paid a cold BEAM start plus fresh
+  # connections to every source it touched, so say so — with the measured time, so the
+  # claim is concrete rather than nagging.
+  #
+  # Only when stdout is a terminal, which is what Burrito's wrapper reports in `_IS_TTY`
+  # (`deps/burrito/src/wrapper.zig:111-116`). An agent or a `| jq` gets nothing extra; a
+  # human running it by hand discovers the daemon exists. `--quiet` suppresses it either
+  # way, and the daemon path never prints it.
+  defp note(reason, command) do
+    with false <- command.quiet,
+         "1" <- System.get_env("_IS_TTY"),
+         message when is_binary(message) <- describe(reason) do
+      IO.puts(:stderr, "note: #{message} — ran in-process in #{elapsed()}.")
+      IO.puts(:stderr, "      `o11y-proxy serve` in another terminal keeps connections warm.")
+    else
+      _ -> :ok
+    end
+  end
+
+  # `server.distribution: false` is the documented off switch. Someone who set it does not
+  # need to be told about it on every invocation.
+  defp describe(:disabled), do: nil
+  # `Node.connect/1` answers `false` for "no such node" and for a rejected cookie alike —
+  # the distinction is not available at this layer, so the note names both rather than
+  # asserting the one that is only usually right.
+  defp describe(:no_daemon), do: "no daemon running (or its cookie doesn't match)"
+
+  defp describe({:no_distribution, reason}),
+    do: "could not start Erlang distribution (#{inspect(reason)})"
+
+  defp describe({:protocol_mismatch, ours, theirs}),
+    do: "the running daemon speaks protocol #{inspect(theirs)}, this binary speaks #{ours}"
+
+  defp describe({:protocol_unknown, ours}),
+    do: "the running daemon predates protocol #{ours} and can't be called"
+
+  defp describe({:call_failed, message}), do: "the daemon call failed (#{message})"
+
+  # Wall clock since the VM started, which is the number that matters: the cold BEAM boot
+  # is most of what a daemon would have saved, and it happened before this code ran.
+  defp elapsed do
+    {total_ms, _since_last} = :erlang.statistics(:wall_clock)
+    :erlang.float_to_binary(total_ms / 1000, decimals: 1) <> "s"
+  end
 
   defp load_config do
     case O11yProxy.Config.load() do
