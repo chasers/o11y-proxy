@@ -31,7 +31,7 @@ unpacks itself to `~/.local/share/.burrito/` and takes a few seconds; later runs
 real service. Also bundles its own Erlang, and keeps the standard release script:
 
 ```bash
-tar xzf o11y_proxy-0.1.0-linux-x86_64.tar.gz
+tar xzf o11y_proxy-0.2.0-linux-x86_64.tar.gz
 ./bin/o11y_proxy daemon                      # or: start, start_iex
 ./bin/o11y_proxy rpc 'O11yProxy.Sources.list()'
 ./bin/o11y_proxy stop

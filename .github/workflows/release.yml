@@ -122,6 +122,63 @@ jobs:
           ./bin/o11y_proxy stop || true
           exit 1
 
+
+      # The CLI is half of what this binary is, and every bug found in it during
+      # development was invisible to `mix test` because it lived in how a release boots —
+      # `No file named serve` on an explicit subcommand, `--no-halt` from the tarball's
+      # start script being read as one. Those only show up on the built artifact, so the
+      # artifact is where they get checked.
+      - name: Smoke-test the CLI subcommands
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          bin="$GITHUB_WORKSPACE/burrito_out/o11y_proxy_linux_x86_64"
+          cat > "$workdir/o11y.yaml" <<'YAML'
+          server:
+            port: 4125
+            auth: none
+          sources: []
+          YAML
+          cd "$workdir"
+
+          # --help/--version are ours; if Kernel.CLI ever saw them it would swallow them.
+          "$bin" --version | grep -qE '^o11y-proxy [0-9]+\.[0-9]+\.[0-9]+$'
+          "$bin" --help | grep -q 'USAGE'
+
+          # Subcommands: JSON on stdout, exit 0, nothing from Kernel.CLI on stderr.
+          test "$("$bin" sources 2>/dev/null)" = '{"sources":[]}'
+          "$bin" health 2>/dev/null | grep -q '"sources"'
+          for cmd in --version --help sources health; do
+            if "$bin" "$cmd" 2>&1 | grep -q 'No file named'; then
+              echo "Kernel.CLI processed our argv on: $cmd" >&2
+              exit 1
+            fi
+          done
+
+          # A bad command is exit 1 with a real message, not a crash and not a server.
+          if "$bin" quesry > out.txt 2> err.txt; then
+            echo "expected 'quesry' to exit non-zero" >&2
+            cat out.txt err.txt >&2
+            exit 1
+          fi
+          grep -q 'unknown command: quesry' err.txt
+          test ! -s out.txt
+
+          # An explicit `serve` must stay up. It is a plain argument, so it reaches
+          # Kernel.CLI's error path — which halts before at_exit and killed the daemon
+          # until Application.start/2 stopped returning for it.
+          ("$bin" serve > serve.log 2>&1 &)
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4125/healthz > /dev/null; then
+              echo "explicit \`serve\` stayed up: $(curl -s http://127.0.0.1:4125/healthz)"
+              grep -q 'No file named' serve.log && { echo "serve printed Kernel.CLI noise" >&2; exit 1; }
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "\`serve\` never answered on /healthz" >&2
+          cat serve.log >&2
+          exit 1
       - name: Attach binaries to the release
         env:
           GH_TOKEN: ${{ github.token }}
