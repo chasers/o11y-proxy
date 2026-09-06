@@ -1,7 +1,7 @@
 defmodule O11yProxy.BackendCase do
   @moduledoc """
-  Shared contract test suite every adapter must pass — see "Adapter contract test suite"
-  in `.plans/02-backend-behaviour.md`. Written in Phase 1, before the first real adapter,
+  Shared contract test suite every adapter must pass. Written before the first real
+  adapter,
   and self-tested there against `O11yProxy.Test.FakeBackend`
   (`test/o11y_proxy/backends/fake_backend_test.exs`).
 
@@ -193,7 +193,7 @@ defmodule O11yProxy.BackendCase do
 
       test "execute/2 output validates against the canonical record schema" do
         # :summary output is intentionally not canonical-record-shaped (time-bucketed
-        # aggregates, no body/trace_id/etc — see `.plans/01-agent-contract.md`), so this
+        # aggregates, no body/trace_id/etc), so this
         # only checks a :sample/:full query if the fixture has one. Metrics never return
         # canonical records at all (always {name, labels, points} MetricSeries) — skip
         # the shape check for that signal but still validate the envelope generically.

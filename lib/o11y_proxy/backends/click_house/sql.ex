@@ -2,11 +2,10 @@ defmodule O11yProxy.Backends.ClickHouse.SQL do
   @moduledoc """
   Pure SQL-building helpers for the ClickHouse adapter — no network I/O, exhaustively
   unit-tested (`test/o11y_proxy/backends/click_house/sql_test.exs`). This is the seam
-  `.plans/02-backend-behaviour.md` calls out as carrying all the injection/correctness
-  risk; every value from a canonical filter goes through ClickHouse's native `{name:Type}`
-  parameter binding via `Ch` — never string interpolation. Only identifiers (table,
-  column names) come from validated config and are spliced directly, per
-  `.plans/03-adapters.md`.
+  carrying all the injection/correctness risk; every value from a canonical filter goes
+  through ClickHouse's native `{name:Type}` parameter binding via `Ch` — never string
+  interpolation. Only identifiers (table, column names) come from validated config and
+  are spliced directly.
   """
 
   alias O11yProxy.Query
@@ -168,8 +167,8 @@ defmodule O11yProxy.Backends.ClickHouse.SQL do
 
   @doc """
   Keyset-pagination WHERE fragment for `mode: full`'s cursor continuation — single-field
-  on `timestamp` (`ts < {cursor:...}` for `DESC`, `>` for `ASC`), per the Phase 5 cursor
-  design in `.plans/03-adapters.md`. A `nil` cursor yields no extra clause/param. Decode
+  on `timestamp` (`ts < {cursor:...}` for `DESC`, `>` for `ASC`), per the cursor
+  design. A `nil` cursor yields no extra clause/param. Decode
   failures (garbage, or a cursor minted by a different backend) surface as
   `{:invalid_cursor, cursor}` rather than silently ignored or spliced raw.
 

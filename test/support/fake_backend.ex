@@ -1,7 +1,7 @@
 defmodule O11yProxy.Test.FakeBackend do
   @moduledoc """
   A minimal adapter that only exists to exercise `O11yProxy.BackendCase` before any real
-  backend is built (see `.plans/05-roadmap.md`, Phase 1). Deliberately: builds a
+  backend is built. Deliberately: builds a
   parameterized "SQL-ish" native query where every filter value lands only in `:params`,
   never spliced into the `:sql` text, and deliberately does *not* support `:regex` so the
   "rejects unsupported operator" contract test has something real to exercise.
@@ -18,7 +18,7 @@ defmodule O11yProxy.Test.FakeBackend do
     [
       table: [type: :string, required: true],
       allow_raw: [type: :boolean, default: false],
-      # Phase 5 test knobs: `fail` forces execute/2 to error (circuit-breaker and
+      # Test knobs: `fail` forces execute/2 to error (circuit-breaker and
       # partial-failure fan-out tests need deterministic failures), `trace_id` stamps a
       # shared trace ID across fakes so a /v1/context fan-out has something to correlate.
       fail: [type: :boolean, default: false],

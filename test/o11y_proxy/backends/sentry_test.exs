@@ -4,7 +4,7 @@ defmodule O11yProxy.Backends.SentryTest do
   by default (see `test/test_helper.exs`) since it needs a live `SENTRY_AUTH_TOKEN` —
   unlike ClickHouse/VictoriaMetrics there's no dockerizable stand-in for Sentry itself.
 
-  To run for real (needs `org:read`-or-broader scope — see `.plans/03-adapters.md`):
+  To run for real (needs `org:read`-or-broader scope):
 
       cp .env.sample .env   # fill in SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT
       set -a; source .env; set +a

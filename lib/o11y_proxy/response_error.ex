@@ -6,7 +6,7 @@ defmodule O11yProxy.ResponseError do
 
   Shared by `/v1/query` (`O11yProxy.Router`) and `/v1/context` (`O11yProxy.Context`) so
   the two can't drift; `errors` being a peer of the data is what makes partial failure the
-  normal path (`.plans/01-agent-contract.md`), which only works if the codes are
+  normal path, which only works if the codes are
   consistent and machine-readable across both.
   """
 

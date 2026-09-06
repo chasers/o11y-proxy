@@ -1,7 +1,7 @@
 defmodule O11yProxy.Context do
   @moduledoc """
   `POST /v1/context` — the correlation endpoint, and the reason this project exists:
-  "one call replaces the six an agent would otherwise make" (`.plans/01-agent-contract.md`).
+  "one call replaces the six an agent would otherwise make".
 
   Three entry points, exactly one per request (`ContextRequest` in
   `priv/static/openapi.json`):
@@ -19,12 +19,12 @@ defmodule O11yProxy.Context do
     * `{from, to, service}` — no anchor entity; correlate everything about one service in
       a window.
 
-  **Partial results are the normal path** (`.plans/04-cross-cutting.md`). Every source is
+  **Partial results are the normal path**. Every source is
   queried concurrently under one fan-out deadline; a slow or broken source becomes an
   entry in `errors` while every healthy source still returns data. `error: null` (queried,
   no matching issue) is deliberately distinct from an `errors` entry (the error source
   itself failed) — that distinction was validated in Phase 0's transcripts before any
-  adapter existed, and `.plans/05-roadmap.md` calls out keeping it.
+  adapter existed, and keeping it is deliberate.
   """
 
   alias O11yProxy.{Query, ResponseError, Sources}

@@ -1,6 +1,6 @@
 defmodule O11yProxy do
   @moduledoc """
-  An agent-friendly observability proxy. See `.plans/00-overview.md` for the design.
+  An agent-friendly observability proxy.
   """
 
   @doc "The OpenAPI document served at `GET /openapi.json`, read once and cached."

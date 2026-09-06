@@ -1,8 +1,8 @@
 defmodule O11yProxy.Shaping do
   @moduledoc """
   Response-shaping pass applied uniformly to both `/v1/query` and `/v1/context` from the
-  router, right before `send_json` — the token-budget and security net from
-  `.plans/04-cross-cutting.md`, in one place so no response path can accidentally skip it.
+  router, right before `send_json` — the token-budget and security net,
+  in one place so no response path can accidentally skip it.
 
   Four independent concerns, composed by `shape/2`:
 
@@ -10,7 +10,7 @@ defmodule O11yProxy.Shaping do
       production data and hands results to an LLM-driven caller; production logs contain
       secrets more often than anyone would like.
     * **Duplicate collapsing** and **long-attribute elision** — only for `:summary`/
-      `:sample` (`.plans/04-cross-cutting.md`: `:full` keeps raw values, since an agent
+      `:sample` (`:full` keeps raw values, since an agent
       that asked for full mode already opted into the cost).
     * **Byte ceiling** — `enforce_byte_ceiling/3`, applied separately by the caller since
       it needs the whole response envelope (to patch `meta.truncated`/`meta.returned`),

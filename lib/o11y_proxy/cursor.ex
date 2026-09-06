@@ -1,7 +1,7 @@
 defmodule O11yProxy.Cursor do
   @moduledoc """
-  Opaque pagination cursors — "opaque cursors, no offset math in the agent" per
-  `.plans/04-cross-cutting.md`. Every adapter's native pagination token (a ClickHouse
+  Opaque pagination cursors — "opaque cursors, no offset math in the agent".
+  Every adapter's native pagination token (a ClickHouse
   timestamp bound, a raw Sentry `Link`-header cursor, ...) gets wrapped with the backend
   name that produced it before being handed to the caller, so:
 

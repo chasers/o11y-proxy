@@ -21,7 +21,7 @@ defmodule O11yProxy.Application do
 
   @doc """
   Starts the core supervision tree *without* Bandit, plus the given sources — the CLI's
-  in-process path (`.plans/07-cli.md`). No port is bound, both because a one-shot command
+  in-process path. No port is bound, both because a one-shot command
   needs none and because binding one would collide with a running daemon.
   """
   @spec start_core(O11yProxy.Config.t(), [O11yProxy.Config.Source.t()]) ::
@@ -100,7 +100,7 @@ defmodule O11yProxy.Application do
   # Distribution isn't on by default: Burrito's launcher passes `-setcookie` but no
   # `-name`/`-sname`, and the release vm.args sets neither, so the binary otherwise runs
   # as :nonode@nohost. Starting it here is what lets a CLI invocation find this daemon and
-  # reuse its warm connections instead of paying a cold start (`.plans/07-cli.md`).
+  # reuse its warm connections instead of paying a cold start.
   #
   # Failure is not fatal. A daemon that cannot start distribution — no epmd, a port
   # already taken, a hostile sandbox — still serves HTTP perfectly well; the only cost is

@@ -1,7 +1,7 @@
 defmodule O11yProxy.Backend do
   @moduledoc """
   Every adapter (ClickHouse, VictoriaMetrics, Sentry, ...) implements these callbacks.
-  See `.plans/02-backend-behaviour.md` for the design rationale — in particular, why
+  Why
   `compile/2` and `execute/2` are separate callbacks: compilation is pure, carries all the
   injection/correctness risk, and is the seam that makes `meta.native_queries` and
   exhaustive adapter tests possible without network mocking. Do not collapse the two.
@@ -42,14 +42,14 @@ defmodule O11yProxy.Backend do
   Execute a compiled query. Returns records plus the native query text.
 
   `:records` is `[O11yProxy.Record.t()]` for `:sample`/`:full` mode. For `:summary` mode
-  it's the time-bucketed aggregate rows described in `.plans/01-agent-contract.md`
+  it's the time-bucketed aggregate rows
   (`%{bucket:, severity:, service:, count:, ...}`) — summary output is intentionally not
   canonical-record-shaped, since it never carries `body`/`trace_id`/etc. `BackendCase`
   only checks canonical-record shape against a non-summary query.
 
   The result map may also carry a `:cursor` key — an opaque token (see
   `O11yProxy.Cursor`) for the next page, present only when there's more data and the
-  adapter supports pagination (Phase 5, `.plans/05-roadmap.md`). Absent (the default for
+  adapter supports pagination. Absent (the default for
   any adapter that doesn't set it) means "no more pages" / "pagination not supported" —
   callers must not distinguish the two.
   """
@@ -68,7 +68,7 @@ defmodule O11yProxy.Backend do
 
   @doc """
   Fetch a single record by its backend-native ID — e.g. a Sentry issue ID for
-  `POST /v1/context {"error_id": ...}` (`.plans/05-roadmap.md`, Phase 5). Optional:
+  `POST /v1/context {"error_id": ...}`. Optional:
   only makes sense for `:errors`-signal backends with an ID-addressable lookup; most
   adapters won't implement it. `O11yProxy.Context` tries every configured `:errors`
   source that exports this, first match wins.

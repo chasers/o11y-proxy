@@ -4,7 +4,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics.PromQL do
   (`test/o11y_proxy/backends/victoria_metrics/promql_test.exs`). Mirrors
   `O11yProxy.Backends.ClickHouse.SQL`'s split for the same reason: this is the seam that
   carries injection/correctness risk, so it stays pure and gets exhaustive tests with no
-  network mocking. See "compile/execute split" in `.plans/02-backend-behaviour.md`.
+  network mocking.
   """
 
   alias O11yProxy.Query

@@ -1,12 +1,12 @@
 defmodule O11yProxy.Backends.ClickHouse do
   @moduledoc """
   Logs and traces adapter over ClickHouse's HTTP interface, via the `ch` client. Built
-  first per `.plans/03-adapters.md`: user-defined tables make it the hardest case for
+  first: user-defined tables make it the hardest case for
   the `O11yProxy.Backend` abstraction — the same adapter serves an OTel-standard
   `otel_logs` table and a bespoke one, differing only in `mapping`, and a second source
   over `otel_traces` (same adapter, different config) is exactly that in practice.
 
-  Guardrails, layered (see "Security" in `.plans/04-cross-cutting.md`):
+  Guardrails, layered:
     * a dedicated read-only ClickHouse user is the real boundary — configure it at the
       database, this adapter cannot enforce it
     * every query carries `readonly=1` plus `max_execution_time`/`max_result_rows`/
@@ -192,8 +192,8 @@ defmodule O11yProxy.Backends.ClickHouse do
     end
   end
 
-  # Time bound is unconditional (every query, every mode — the guardrail
-  # `.plans/03-adapters.md` calls out). Cursor bound only applies to `mode: full`; a
+  # Time bound is unconditional (every query, every mode — a
+  # non-negotiable guardrail). Cursor bound only applies to `mode: full`; a
   # cursor supplied for :summary/:sample is an explicit error, not silently ignored —
   # neither mode has a stable per-row key to page from (:summary is aggregated, :sample
   # is `ORDER BY rand()`).

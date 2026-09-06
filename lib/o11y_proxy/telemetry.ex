@@ -1,7 +1,7 @@
 defmodule O11yProxy.Telemetry do
   @moduledoc """
   Self-observability — dogfooding, and the fastest way to find out the proxy itself is
-  the slow part. See "Self-observability" in `.plans/04-cross-cutting.md`.
+  the slow part.
 
   Event names adapters and the query layer are expected to emit as those pieces are
   built (Phase 2+): `[:o11y_proxy, :query, :compile | :execute]`,

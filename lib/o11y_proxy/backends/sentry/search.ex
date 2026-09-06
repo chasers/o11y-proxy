@@ -8,7 +8,7 @@ defmodule O11yProxy.Backends.Sentry.Search do
   colon or quote — every value is double-quoted and escaped, never spliced raw, exactly
   like `PromQL`'s label-value handling.
 
-  Only two canonical fields are filterable for v1 (see `.plans/03-adapters.md`):
+  Only two canonical fields are filterable for v1:
   `severity` (`eq` only — Sentry's `level:` token is an exact match, not a range) and
   `body` (`contains` only — a bare quoted term does Sentry's free-text message search).
   `trace_id` (`eq`) is included for the future `/v1/context` fan-out even though nothing

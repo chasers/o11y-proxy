@@ -4,7 +4,7 @@ defmodule O11yProxy.Sources.Server do
   `O11yProxy.Sources.Registry` and supervised by `O11yProxy.Sources.Supervisor`. Holds
   the adapter state built by `backend.init/1` and publishes it to
   `O11yProxy.Sources.StateTable` so query execution can read it without going through
-  this process. See "Process model" in `.plans/02-backend-behaviour.md`.
+  this process.
   """
 
   use GenServer, restart: :transient

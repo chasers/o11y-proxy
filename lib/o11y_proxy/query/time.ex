@@ -2,7 +2,7 @@ defmodule O11yProxy.Query.Time do
   @moduledoc """
   Parses the `from`/`to` time fields accepted throughout the agent contract: either an
   RFC3339 timestamp or a relative expression anchored on `now`, e.g. `"now"`, `"now-15m"`,
-  `"now-1h"`, `"now-7d"`. See `.plans/01-agent-contract.md`.
+  `"now-1h"`, `"now-7d"`.
   """
 
   @unit_seconds %{"s" => 1, "m" => 60, "h" => 3600, "d" => 86_400, "w" => 604_800}

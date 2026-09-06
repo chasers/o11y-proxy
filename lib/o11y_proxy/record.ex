@@ -1,7 +1,7 @@
 defmodule O11yProxy.Record do
   @moduledoc """
   Canonical log/trace/error record shape every adapter's `execute/2` returns, loosely
-  following OpenTelemetry semantic conventions. See `.plans/01-agent-contract.md`.
+  following OpenTelemetry semantic conventions.
   """
 
   @derive Jason.Encoder

@@ -3,7 +3,7 @@ defmodule O11yProxy.Remote do
   The one entry point every transport goes through: a string-keyed request in, an
   already-shaped response map out.
 
-  `.plans/07-cli.md` introduces this as the single stable façade the CLI will `:erpc`
+  This is the single stable façade the CLI `:erpc`s
   into a running daemon. Keeping it to *one* function is what contains version skew —
   a newer CLI talking to an older daemon depends on this contract and nothing else,
   never on the shape of an internal function.
@@ -17,7 +17,7 @@ defmodule O11yProxy.Remote do
   The `{:ok, _}` / `{:error, _}` split is the transport-neutral form of "did we produce a
   response": `{:ok, body}` is HTTP 200 and CLI exit 0 — *including* a partial result whose
   `errors` list is non-empty, which is the normal path for a fan-out where one source is
-  down (`.plans/04-cross-cutting.md`). `{:error, body}` is a request that could not be
+  down. `{:error, body}` is a request that could not be
   served at all: a malformed query, an unknown source. `body` is JSON-encodable either way.
 
   ## Reaching a running daemon
@@ -140,8 +140,9 @@ defmodule O11yProxy.Remote do
     {:error, %{error: "invalid_query", message: "unrecognized request: #{inspect(other)}"}}
   end
 
-  # Phase 2: single-source only. Fan-out across multiple sources (merge, rank, budget
-  # shaping) is Phase 5's "query layer" — see .plans/05-roadmap.md.
+  # Single-source only. Fan-out across several sources at once — merging, ranking and
+  # budget-shaping one combined result — is not built. `/v1/context` is the way to reach
+  # several sources in one call today: it correlates rather than merges.
   defp run_query(%{sources: [name]} = query) do
     started = System.monotonic_time(:millisecond)
 
@@ -165,7 +166,7 @@ defmodule O11yProxy.Remote do
   end
 
   defp run_query(%{sources: nil}) do
-    invalid_query("sources is required in Phase 2 (no fan-out yet) — name exactly one source")
+    invalid_query("sources is required — name exactly one source")
   end
 
   # Matches [] and [_, _ | _] alike: anything that is not exactly one source.
@@ -174,8 +175,9 @@ defmodule O11yProxy.Remote do
      %{
        error: "unsupported",
        message:
-         "Phase 2 supports exactly one source in `sources` — fan-out across multiple " <>
-           "sources lands in Phase 5 (.plans/05-roadmap.md)"
+         "`sources` must name exactly one source — querying several at once is not " <>
+           "supported. Issue one query per source, or use /v1/context to correlate " <>
+           "across every configured source in a single call."
      }}
   end
 

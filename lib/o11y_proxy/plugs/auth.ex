@@ -2,8 +2,7 @@ defmodule O11yProxy.Plugs.Auth do
   @moduledoc """
   No-op by default (`server.auth: none`) — assigns the singleton local `Caller`. Token
   auth is the shared-deployment seam: set `server.auth: token` and `O11Y_PROXY_TOKEN`;
-  requests then need a matching `Authorization: Bearer <token>` header. See
-  "Shared-ready seams" in `.plans/04-cross-cutting.md`.
+  requests then need a matching `Authorization: Bearer <token>` header.
   """
 
   import Plug.Conn

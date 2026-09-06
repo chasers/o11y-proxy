@@ -4,7 +4,7 @@ defmodule O11yProxy.Config do
   `O11Y_PROXY_CONFIG`). Secrets are `${ENV_VAR}` references only — the file itself is safe
   to commit, and never holds a literal credential. Each source's adapter-specific fields
   are validated by that adapter's own `config_schema/0` via NimbleOptions, so a typo in a
-  source config fails at boot with a precise message. See `.plans/02-backend-behaviour.md`.
+  source config fails at boot with a precise message.
   """
 
   alias O11yProxy.Config.Source
@@ -25,8 +25,8 @@ defmodule O11yProxy.Config do
       type: :boolean,
       default: true,
       doc:
-        "let the CLI reach a running daemon over Erlang distribution on loopback " <>
-          "(`.plans/07-cli.md`). Off means every CLI invocation runs in-process."
+        "let the CLI reach a running daemon over Erlang distribution on loopback. Off " <>
+          "means every CLI invocation runs in-process."
     ]
   ]
 
@@ -37,7 +37,7 @@ defmodule O11yProxy.Config do
     max_bytes: [
       type: :pos_integer,
       default: 64_000,
-      doc: "response byte ceiling before truncation (`.plans/04-cross-cutting.md`)"
+      doc: "response byte ceiling before truncation"
     ],
     redact_keys: [
       type: {:list, :string},

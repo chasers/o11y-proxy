@@ -8,8 +8,8 @@ defmodule O11yProxy.Sources do
   alias O11yProxy.Config.Source
   alias O11yProxy.Sources.StateTable
 
-  # Trips the breaker after this many *consecutive* failures for a source, per
-  # .plans/04-cross-cutting.md; overridable so tests don't have to wait out the real
+  # Trips the breaker after this many *consecutive* failures for a source. Overridable
+  # so tests don't have to wait out the real
   # backoff (`Application.put_env(:o11y_proxy, :breaker, threshold: 2, backoff_ms: 50)`).
   @breaker_defaults [threshold: 5, backoff_ms: 30_000]
 
@@ -105,8 +105,8 @@ defmodule O11yProxy.Sources do
   end
 
   @doc """
-  Compiles and executes a query against one source, in a supervised `Task` — per
-  "Process model" in `.plans/02-backend-behaviour.md`, a slow query must not block that
+  Compiles and executes a query against one source, in a supervised `Task`: a slow
+  query must not block that
   source's own health checks or other queries. Every returned record is stamped with the
   *configured source name* (not the backend type), since the adapter itself has no
   business knowing it.
@@ -114,7 +114,7 @@ defmodule O11yProxy.Sources do
   Checks the source's circuit breaker first (`StateTable.breaker_status/1`) — if open,
   fails fast with `{:error, {:circuit_open, retry_after_ms}}` without touching
   `compile/2`/`execute/2` at all, per "fail fast into the errors array rather than
-  burning the caller's timeout budget" (`.plans/04-cross-cutting.md`). A successful
+  burning the caller's timeout budget". A successful
   execute closes the breaker; a failure (including a timeout) bumps its failure count.
   """
   @spec run_query(String.t(), O11yProxy.Query.t(), timeout()) ::

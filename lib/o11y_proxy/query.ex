@@ -1,7 +1,7 @@
 defmodule O11yProxy.Query do
   @moduledoc """
   The canonical query IR. Every backend's `compile/2` takes one of these. Built from the
-  `POST /v1/query` request body per `.plans/01-agent-contract.md` — this module owns
+  `POST /v1/query` request body — this module owns
   parsing and validating that shape; it does not know about any backend's dialect.
   """
 
