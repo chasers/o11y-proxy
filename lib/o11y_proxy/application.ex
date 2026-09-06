@@ -6,19 +6,49 @@ defmodule O11yProxy.Application do
 
   @impl true
   def start(_type, _args) do
+    case O11yProxy.CLI.main(cli_argv()) do
+      :serve -> start_server()
+      status -> System.halt(status)
+    end
+  end
+
+  # Under Mix — `mix run`, `mix test`, `iex -S mix` — the plain arguments belong to Mix,
+  # not to us: `mix test some_test.exs` would otherwise look like a subcommand. Releases
+  # don't ship Mix, which is the same signal keep_alive_if_release/0 uses below.
+  defp cli_argv do
+    if Code.ensure_loaded?(Mix), do: [], else: O11yProxy.CLI.argv()
+  end
+
+  @doc """
+  Starts the core supervision tree *without* Bandit, plus the given sources — the CLI's
+  in-process path (`.plans/07-cli.md`). No port is bound, both because a one-shot command
+  needs none and because binding one would collide with a running daemon.
+  """
+  @spec start_core(O11yProxy.Config.t(), [O11yProxy.Config.Source.t()]) ::
+          :ok | {:error, String.t()}
+  def start_core(config, sources) do
+    put_runtime_env(config)
+
+    case Supervisor.start_link(core_children(),
+           strategy: :one_for_one,
+           name: O11yProxy.Supervisor
+         ) do
+      {:ok, _pid} ->
+        O11yProxy.Sources.start_all(sources)
+        :ok
+
+      {:error, reason} ->
+        {:error, "failed to start: #{inspect(reason)}"}
+    end
+  end
+
+  defp start_server do
     config = load_config_or_exit()
+    put_runtime_env(config)
 
-    Application.put_env(:o11y_proxy, :auth, config.server.auth)
-    Application.put_env(:o11y_proxy, :defaults, config.defaults)
-
-    children = [
-      {Registry, keys: :unique, name: O11yProxy.Sources.Registry},
-      O11yProxy.Sources.StateTable,
-      {DynamicSupervisor, strategy: :one_for_one, name: O11yProxy.Sources.Supervisor},
-      {Task.Supervisor, name: O11yProxy.TaskSupervisor},
-      {TelemetryMetricsPrometheus.Core, metrics: O11yProxy.Telemetry.metrics()},
-      {Bandit, plug: O11yProxy.Router, ip: {127, 0, 0, 1}, port: config.server.port}
-    ]
+    children =
+      core_children() ++
+        [{Bandit, plug: O11yProxy.Router, ip: {127, 0, 0, 1}, port: config.server.port}]
 
     opts = [strategy: :one_for_one, name: O11yProxy.Supervisor]
 
@@ -53,6 +83,23 @@ defmodule O11yProxy.Application do
     end
   end
 
+  # Everything the query path needs. Bandit is the *only* difference between a server and
+  # a CLI run, which is what makes the two paths produce byte-identical output.
+  defp core_children do
+    [
+      {Registry, keys: :unique, name: O11yProxy.Sources.Registry},
+      O11yProxy.Sources.StateTable,
+      {DynamicSupervisor, strategy: :one_for_one, name: O11yProxy.Sources.Supervisor},
+      {Task.Supervisor, name: O11yProxy.TaskSupervisor},
+      {TelemetryMetricsPrometheus.Core, metrics: O11yProxy.Telemetry.metrics()}
+    ]
+  end
+
+  defp put_runtime_env(config) do
+    Application.put_env(:o11y_proxy, :auth, config.server.auth)
+    Application.put_env(:o11y_proxy, :defaults, config.defaults)
+  end
+
   # A release boots via `-noshell -s elixir start_cli`, and Elixir's CLI halts the VM once
   # argv processing finishes — so a server release boots, logs "listening", and exits.
   # `mix release`'s own start script avoids this by passing `--no-halt`; a Burrito binary
@@ -65,6 +112,9 @@ defmodule O11yProxy.Application do
   # halting, runs `at_exit` hooks and calls `System.halt/1`. So an `at_exit` hook is the
   # last point of control before the VM goes down — blocking there is what keeps a server
   # release alive.
+  #
+  # A CLI subcommand never gets here: it halts inside start/2, before `Kernel.CLI` runs at
+  # all, which is also why an unrecognized argument never produces `No file named query`.
   #
   # This does not interfere with shutdown: `at_exit` hooks are a `Kernel.CLI` concept, run
   # once on that startup path. SIGTERM and `:init.stop/0` don't go through them, so
