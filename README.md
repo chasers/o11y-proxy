@@ -11,6 +11,91 @@ breakers, attribute redaction, response byte ceilings, and cursor pagination (Ph
 see `.plans/05-roadmap.md`). Not built yet: the result cache, per-source rate limiting,
 and the agent eval suite.
 
+## Quickstart
+
+Needs Erlang 27 and Elixir 1.18 — both pinned in `.tool-versions`, so with
+[mise](https://mise.jdx.dev) (or asdf) installed:
+
+```bash
+mise install          # or: asdf install
+mix deps.get
+mix run --no-halt     # serves on 127.0.0.1:4000, loopback only
+```
+
+It boots with zero sources configured, which is a useful state — the discovery endpoints
+work immediately:
+
+```bash
+curl localhost:4000/healthz      # {"sources":{}}
+curl localhost:4000/v1/sources   # {"sources":[]}
+curl localhost:4000/openapi.json # the full API contract
+```
+
+### Point it at something real
+
+Sources live in `o11y.yaml` (or `~/.config/o11y-proxy/config.yaml`, or wherever
+`O11Y_PROXY_CONFIG` points). Secrets are `${ENV_VAR}` references only — the file never
+holds a credential, so it stays safe to commit. A Sentry source needs the least setup,
+since there's nothing to run locally:
+
+```yaml
+sources:
+  - name: prod_errors
+    backend: sentry
+    signal: errors
+    org: ${SENTRY_ORG}
+    project: ${SENTRY_PROJECT}
+    token: ${SENTRY_AUTH_TOKEN} # needs org:read — see .plans/03-adapters.md
+```
+
+```bash
+cp .env.sample .env    # fill in SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT
+set -a; source .env; set +a
+mix run --no-halt
+```
+
+For ClickHouse and VictoriaMetrics there's a docker-compose stack with seed data:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+./docker/seed.sh && ./docker/seed-vm.sh
+O11Y_PROXY_CONFIG=docker/o11y.yaml mix run --no-halt
+```
+
+Worth knowing: the Sentry adapter has been exercised end-to-end against a real org, but
+the ClickHouse and VictoriaMetrics adapters have only ever run against their contract
+tests — no one has yet run the docker path above start to finish. If it fights you,
+that's the likeliest reason, and `.plans/05-roadmap.md` tracks it.
+
+### First calls
+
+```bash
+# What exists, and what each source can actually do
+curl localhost:4000/v1/sources | jq
+
+# Query one source. Sentry only supports mode: full (its issue search is a flat list,
+# not time-bucketed); ClickHouse sources also take "summary" and "sample".
+curl -s localhost:4000/v1/query -H 'content-type: application/json' -d '{
+  "sources": ["prod_errors"], "signal": "errors",
+  "from": "now-24h", "to": "now", "mode": "full", "limit": 5
+}' | jq '.data[].body, .meta.native_queries'
+
+# Then correlate — one call instead of six
+curl -s localhost:4000/v1/context -H 'content-type: application/json' \
+  -d '{"trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"}' | jq
+```
+
+`meta.native_queries` in every response shows the exact query that ran against each
+backend, which is how you learn a dialect well enough to reach for `raw` later.
+
+### Tests
+
+```bash
+mix test                                    # everything that needs no live backend
+mix test --include sentry                   # against a real Sentry org (needs .env)
+mix test --include clickhouse --include victoriametrics   # against docker-compose
+```
+
 ## Example queries
 
 Pseudo-requests against the canonical query API, one per v1 backend.
