@@ -1,4 +1,5 @@
 # o11y-proxy config. Safe to commit: secrets are only ever ${ENV_VAR} references, never
+# literals.
 #
 # Override this file's location with O11Y_PROXY_CONFIG, or drop one at
 # ~/.config/o11y-proxy/config.yaml.
@@ -17,9 +18,9 @@ defaults:
   # matches a key's last segment, so `http.request.header.authorization` is covered.
   redact_keys: []
 
-# No sources configured — ClickHouse, VictoriaMetrics, and Sentry adapters all exist now
-# — this file just doesn't point at any real
-# instances. A source block looks like this:
+# No sources configured — ClickHouse, VictoriaMetrics, and Sentry adapters all exist
+# now; this file just doesn't point at any real instances. A source block looks like
+# this:
 #
 # sources:
 #   - name: app_logs

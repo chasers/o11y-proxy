@@ -65,8 +65,8 @@ defmodule O11yProxy.CLI.Args do
   Parses argv.
 
   Returns `{:ok, command}` for something to run, `{:print, text}` for `--help`/`--version`
-  (which this module owns: if control ever reached `Kernel.CLI`
-  it would swallow them), or `{:error, message}` for a usage error the caller prints to
+  (which this module owns: if control ever reached `Kernel.CLI` it would swallow them),
+  or `{:error, message}` for a usage error the caller prints to
   stderr before exiting 1.
   """
   @spec parse([String.t()]) :: {:ok, command()} | {:print, String.t()} | {:error, String.t()}

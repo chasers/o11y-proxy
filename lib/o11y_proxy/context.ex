@@ -19,8 +19,8 @@ defmodule O11yProxy.Context do
     * `{from, to, service}` — no anchor entity; correlate everything about one service in
       a window.
 
-  **Partial results are the normal path**. Every source is
-  queried concurrently under one fan-out deadline; a slow or broken source becomes an
+  **Partial results are the normal path**. Every source is queried concurrently under
+  one fan-out deadline; a slow or broken source becomes an
   entry in `errors` while every healthy source still returns data. `error: null` (queried,
   no matching issue) is deliberately distinct from an `errors` entry (the error source
   itself failed) — that distinction was validated in Phase 0's transcripts before any

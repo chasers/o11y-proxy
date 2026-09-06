@@ -5,9 +5,9 @@ defmodule O11yProxy.ResponseError do
   one of the documented enum values and nothing else.
 
   Shared by `/v1/query` (`O11yProxy.Router`) and `/v1/context` (`O11yProxy.Context`) so
-  the two can't drift; `errors` being a peer of the data is what makes partial failure the
-  normal path, which only works if the codes are
-  consistent and machine-readable across both.
+  the two can't drift; `errors` being a peer of the data is what makes partial failure
+  the normal path, which only works if the codes are consistent and machine-readable
+  across both.
   """
 
   @doc "Builds one `ResponseError` entry for a source that failed."
