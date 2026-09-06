@@ -129,4 +129,70 @@ defmodule O11yProxy.ConfigTest do
     assert {:error, {:no_config_file, _candidates}} =
              Config.load(path: "/nonexistent/definitely/not/here.yaml")
   end
+
+  describe "format_error/1" do
+    # These strings are the whole first-run experience for someone who downloaded a
+    # single-file binary and ran it in an empty directory. They must say what broke and
+    # what to do — never leak a raw Elixir tuple.
+    test "a missing config file explains where it looked and how to point elsewhere" do
+      message = Config.format_error({:no_config_file, ["./o11y.yaml", "~/.config/x.yaml"]})
+
+      assert message =~ "No config file found"
+      assert message =~ "./o11y.yaml"
+      assert message =~ "O11Y_PROXY_CONFIG"
+      assert message =~ "sources: []"
+    end
+
+    test "a YAML syntax error names the file, line and column" do
+      error = %YamlElixir.ParsingError{line: 3, column: 2, type: :x, message: "bad token"}
+      message = Config.format_error({:invalid_yaml, "/tmp/o11y.yaml", error})
+
+      assert message =~ "/tmp/o11y.yaml"
+      assert message =~ "line 3, column 2"
+      assert message =~ "bad token"
+    end
+
+    test "a missing env var names the variable" do
+      message = Config.format_error({:missing_env_var, "SENTRY_AUTH_TOKEN"})
+
+      assert message =~ "${SENTRY_AUTH_TOKEN}"
+      assert message =~ "export SENTRY_AUTH_TOKEN"
+    end
+
+    test "a misconfigured source names the source and the adapter's own complaint" do
+      message = Config.format_error({:invalid_source_config, "app_logs", "required :url not set"})
+
+      assert message =~ ~s(Source "app_logs")
+      assert message =~ "required :url not set"
+    end
+
+    test "an unknown backend lists the ones that exist" do
+      message = Config.format_error({:unknown_backend, "postgres"})
+
+      assert message =~ ~s(Unknown backend "postgres")
+      assert message =~ "clickhouse"
+      assert message =~ "sentry"
+      assert message =~ "victoriametrics"
+    end
+
+    test "an invalid signal lists the valid ones" do
+      message = Config.format_error({:invalid_signal, "lgos"})
+
+      assert message =~ "lgos"
+      assert message =~ "logs"
+      assert message =~ "metrics"
+    end
+
+    test "a malformed source entry shows the required keys" do
+      message = Config.format_error({:invalid_source_shape, %{"name" => "x"}})
+
+      assert message =~ "name"
+      assert message =~ "backend"
+      assert message =~ "signal"
+    end
+
+    test "an unrecognized reason still returns a string rather than raising" do
+      assert is_binary(Config.format_error({:something_new, :entirely}))
+    end
+  end
 end

@@ -210,5 +210,126 @@ defmodule O11yProxy.Config do
     end
   end
 
-  defp format_error(reason), do: inspect(reason)
+  @doc """
+  Turns a `load/1` error into something a human can act on. Config problems are the most
+  likely reason a first run fails — especially for someone who just downloaded a
+  single-file binary — so these say what was wrong, where, and what to do about it,
+  rather than leaking an Elixir tuple.
+  """
+  @spec format_error(term()) :: String.t()
+  def format_error({:no_config_file, paths}) do
+    """
+    No config file found. Looked in:
+    #{Enum.map_join(paths, "\n", &"  - #{&1}")}
+
+    Create one of those, or point at a config with:
+      O11Y_PROXY_CONFIG=/path/to/config.yaml
+
+    The smallest config that starts the server (discovery endpoints work with no
+    sources — /v1/sources, /openapi.json and /healthz all respond):
+
+      server:
+        port: 4000
+      sources: []
+    """
+  end
+
+  def format_error({:invalid_yaml, path, reason}) do
+    """
+    Could not parse #{path} as YAML.
+
+    #{indent(describe_yaml_error(reason))}
+    """
+  end
+
+  def format_error({:missing_env_var, var}) do
+    """
+    The config references ${#{var}}, but #{var} is not set in the environment.
+
+    Secrets are env-var references so the config file itself never holds a credential.
+    Set it before starting, e.g.:
+      export #{var}=...
+    """
+  end
+
+  def format_error({:invalid_block, block, message}) do
+    """
+    The `#{block}:` block in your config is invalid.
+
+    #{indent(message)}
+    """
+  end
+
+  def format_error({:invalid_source_config, name, message}) do
+    """
+    Source "#{name}" is misconfigured.
+
+    #{indent(message)}
+
+    Each backend validates its own keys — see the config reference in the README, or
+    `mix run -e 'IO.inspect(O11yProxy.Backends.ClickHouse.config_schema())'` for the
+    exact options a backend accepts.
+    """
+  end
+
+  def format_error({:unknown_backend, name}) do
+    known = O11yProxy.Backends.registry() |> Map.keys() |> Enum.sort() |> Enum.join(", ")
+
+    """
+    Unknown backend "#{name}".
+
+    Known backends: #{known}
+    """
+  end
+
+  def format_error({:invalid_signal, signal}) do
+    """
+    Invalid signal "#{signal}".
+
+    A source's `signal:` must be one of: #{Enum.map_join(O11yProxy.Query.signals(), ", ", &to_string/1)}
+    """
+  end
+
+  def format_error({:invalid_source_shape, raw}) do
+    """
+    A source entry is missing required keys. Every source needs at least `name`,
+    `backend` and `signal`:
+
+      sources:
+        - name: app_logs
+          backend: clickhouse
+          signal: logs
+
+    Got: #{inspect(raw)}
+    """
+  end
+
+  def format_error({shape_error, value})
+      when shape_error in [:invalid_config_shape, :invalid_sources_shape] do
+    """
+    The config file's structure is wrong (#{shape_error}). It should be a YAML mapping
+    with optional `server:`/`defaults:` blocks and a `sources:` list.
+
+    Got: #{inspect(value)}
+    """
+  end
+
+  def format_error({:invalid_block_shape, block, value}) do
+    """
+    The `#{block}:` block should be a YAML mapping, got: #{inspect(value)}
+    """
+  end
+
+  def format_error(reason), do: inspect(reason)
+
+  defp describe_yaml_error(%YamlElixir.ParsingError{line: line, column: column, message: message}) do
+    "line #{line}, column #{column}: #{message}"
+  end
+
+  defp describe_yaml_error(%{__exception__: true} = exception), do: Exception.message(exception)
+  defp describe_yaml_error(reason), do: inspect(reason)
+
+  defp indent(text) do
+    text |> to_string() |> String.split("\n") |> Enum.map_join("\n", &("  " <> &1))
+  end
 end

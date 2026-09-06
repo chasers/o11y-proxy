@@ -11,7 +11,36 @@ breakers, attribute redaction, response byte ceilings, and cursor pagination (Ph
 see `.plans/05-roadmap.md`). Not built yet: the result cache, per-source rate limiting,
 and the agent eval suite.
 
-## Quickstart
+## Install
+
+Published releases carry two kinds of artifact — pick by how you intend to run it.
+
+**Single-file binary** (nothing to install, no Erlang required — it bundles its own):
+
+```bash
+curl -LO https://github.com/chasers/o11y-proxy/releases/latest/download/o11y_proxy_macos_silicon
+chmod +x o11y_proxy_macos_silicon
+./o11y_proxy_macos_silicon      # reads ./o11y.yaml
+```
+
+Built for `linux_x86_64`, `linux_aarch64`, `macos_silicon` and `macos_x86_64`. First run
+unpacks itself to `~/.local/share/.burrito/` and takes a few seconds; later runs are fast.
+
+**OTP release tarball** (`o11y_proxy-<version>-linux-x86_64.tar.gz`) — for running it as a
+real service. Also bundles its own Erlang, and keeps the standard release script:
+
+```bash
+tar xzf o11y_proxy-0.1.0-linux-x86_64.tar.gz
+./bin/o11y_proxy daemon                      # or: start, start_iex
+./bin/o11y_proxy rpc 'O11yProxy.Sources.list()'
+./bin/o11y_proxy stop
+```
+
+The binary is the better first-run experience; the tarball is what you want under systemd,
+since `daemon`/`stop`/`remote`/`rpc` come with it. Note the tarball is built for the
+platform it was released from (linux x86_64), while the binaries are cross-compiled.
+
+## Quickstart (from source)
 
 Needs Erlang 27 and Elixir 1.18 — both pinned in `.tool-versions`, so with
 [mise](https://mise.jdx.dev) (or asdf) installed:
@@ -97,6 +126,28 @@ mix test                                    # everything that needs no live back
 mix test --include sentry                   # against a real Sentry org (needs .env)
 mix test --include clickhouse --include victoriametrics   # against docker-compose
 ```
+
+### Building the distributables
+
+```bash
+MIX_ENV=prod mix release --overwrite                     # all targets + the tarball
+BURRITO_TARGET=linux_aarch64 MIX_ENV=prod mix release --overwrite   # just one
+```
+
+Binaries land in `burrito_out/`, the tarball in `_build/prod/`. Needs Zig (pinned in
+`.tool-versions`) and `xz`; Windows targets would additionally need `7z` and aren't built.
+
+Two things that will otherwise cost you an afternoon:
+
+- **Burrito installs by version.** It unpacks to
+  `~/.local/share/.burrito/o11y_proxy_erts-<erts>_<version>/` and reuses that directory,
+  so rebuilding without bumping `version:` in `mix.exs` runs the *old* code. Clear it with
+  `./o11y_proxy_<target> maintenance uninstall`, or `rm -rf` the directory.
+- **Zig and OTP versions are load-bearing.** Burrito demands one exact Zig version (its
+  README has lagged behind the code — trust the error from `mix release`), and OTP must be
+  a version the Beam Machine CDN publishes a precompiled ERTS for. Not every patch release
+  is there: 27.3.4.17 exists upstream but 404s, which is why `.tool-versions` pins
+  27.3.4.16.
 
 ## Example queries
 

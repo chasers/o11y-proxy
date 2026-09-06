@@ -22,6 +22,10 @@ o11y_proxy-*.tar
 # Temporary files, for example, from tests.
 /tmp/
 
+# Burrito single-file executables — tens of MB each (they bundle an ERTS).
+# These are release artifacts, published to GitHub Releases, never committed.
+/burrito_out/
+
 # Local secrets for manual spikes/testing — never commit.
 .env
 .env.*

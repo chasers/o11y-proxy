@@ -1,0 +1,132 @@
+name: Publish release binaries
+
+# Fires when a release is *published* on GitHub (not on tag push, so drafts can be
+# prepared without kicking off a build). Builds the Burrito single-file executables and
+# attaches them to that release.
+on:
+  release:
+    types: [published]
+  # Manual re-run, e.g. if a build failed and the release already exists.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and upload to (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: write # required to upload assets onto the release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # These versions are pinned deliberately and are not free to bump:
+      #
+      #   * OTP must be a version Burrito can fetch a precompiled ERTS for from the Beam
+      #     Machine CDN. Not every patch release is published there — 27.3.4.17 exists
+      #     upstream but 404s on the CDN, which fails the build well after setup with a
+      #     confusing error. Check before bumping:
+      #     https://beam-machine-universal.b-cdn.net/OTP-<version>/linux/x86_64/any/otp_<version>_linux_any_x86_64.tar.gz
+      #   * Zig must be the exact version Burrito demands, which its README has been known
+      #     to lag behind — trust the error message from `mix release`, not the docs.
+      #
+      # Keep these in sync with .tool-versions.
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.16"
+          elixir-version: "1.18.5"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Cache deps and Burrito downloads
+        uses: actions/cache@v4
+        with:
+          # Burrito's cache holds the fetched ERTS tarballs and musl runtime — tens of MB
+          # per target, re-downloaded on every cold run otherwise.
+          path: |
+            deps
+            _build
+            ~/.cache/burrito_file_cache
+          key: ${{ runner.os }}-burrito-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-burrito-
+
+      - run: mix deps.get
+
+      - name: Build all targets
+        run: MIX_ENV=prod mix release --overwrite
+
+      # The OTP release tarball is built for the *runner's* platform only (linux x86_64,
+      # glibc) — unlike the Burrito binaries, which are cross-compiled for four targets.
+      # Name it accordingly so nobody downloads it expecting it to run on a Mac.
+      - name: Name the release tarball for its platform
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 'version: "' mix.exs | sed 's/.*version: "\([^"]*\)".*/\1/')
+          mv "_build/prod/o11y_proxy-${version}.tar.gz" \
+             "burrito_out/o11y_proxy-${version}-linux-x86_64.tar.gz"
+
+      # Don't ship artifacts nobody has run. The runner is linux/x86_64, so both the
+      # single-file binary and the release tarball are testable here — boot each against a
+      # minimal config and require a real answer from /healthz before anything is uploaded.
+      # (A bare `./o11y_proxy` with no flags must stay up: see keep_alive_if_release/0.)
+      - name: Smoke-test the linux x86_64 binary
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          cat > "$workdir/o11y.yaml" <<'YAML'
+          server:
+            port: 4123
+            auth: none
+          sources: []
+          YAML
+          chmod +x burrito_out/o11y_proxy_linux_x86_64
+          (cd "$workdir" && "$GITHUB_WORKSPACE/burrito_out/o11y_proxy_linux_x86_64" &)
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4123/healthz > /dev/null; then
+              echo "binary booted; /healthz: $(curl -s http://127.0.0.1:4123/healthz)"
+              curl -sf http://127.0.0.1:4123/v1/sources > /dev/null && echo "/v1/sources ok"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "binary never answered on /healthz" >&2
+          exit 1
+
+      - name: Smoke-test the release tarball
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          tar xzf burrito_out/o11y_proxy-*-linux-x86_64.tar.gz -C "$workdir"
+          cat > "$workdir/o11y.yaml" <<'YAML'
+          server:
+            port: 4124
+            auth: none
+          sources: []
+          YAML
+          cd "$workdir"
+          ./bin/o11y_proxy daemon
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4124/healthz > /dev/null; then
+              echo "tarball booted; /healthz: $(curl -s http://127.0.0.1:4124/healthz)"
+              ./bin/o11y_proxy stop
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "release tarball never answered on /healthz" >&2
+          ./bin/o11y_proxy stop || true
+          exit 1
+
+      - name: Attach binaries to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          ls -la burrito_out/
+          gh release upload "$TAG" burrito_out/* --clobber --repo "$GITHUB_REPOSITORY"
