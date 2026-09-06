@@ -48,8 +48,10 @@ defmodule O11yProxy.CLI do
       {:ok, command} ->
         run(command)
 
+      # trim_trailing so both help (a heredoc, already newline-terminated) and the
+      # one-line version string end with exactly one newline.
       {:print, text} ->
-        IO.write(text)
+        IO.puts(String.trim_trailing(text))
         0
 
       {:error, message} ->

@@ -57,6 +57,7 @@ defmodule O11yProxy.Application do
         O11yProxy.Sources.start_all(config.sources)
         Logger.info("o11y-proxy listening on http://127.0.0.1:#{config.server.port}")
         keep_alive_if_release()
+        block_if_plain_args()
         {:ok, pid}
 
       # Running it twice is an ordinary mistake and deserves an ordinary message, not the
@@ -135,6 +136,30 @@ defmodule O11yProxy.Application do
   defp keep_alive_if_release do
     unless Code.ensure_loaded?(Mix) do
       System.at_exit(fn _status -> Process.sleep(:infinity) end)
+    end
+  end
+
+  # ...but the at_exit hook is not enough on its own, because it is only reached when
+  # `Kernel.CLI` had nothing to complain about. An explicit `o11y-proxy serve` arrives as
+  # a plain argument, becomes `{:file, "serve"}`, and takes the error path in
+  # `Kernel.CLI.main/1` — which calls `System.halt(1)` *inside* the command runner, before
+  # `run/1` ever gets to `at_exit` (see `Kernel.CLI.run/1`). Verified on the built binary:
+  # it logged "listening", printed `No file named serve`, and died.
+  #
+  # So when there are plain arguments at all, don't return. Blocking here means
+  # `Application.start/2` never completes, the boot script never reaches
+  # `-s elixir start_cli`, and `Kernel.CLI` never runs. The supervision tree is already up
+  # and serving — `Supervisor.start_link/2` returned above — and `init` runs the boot
+  # script in a separate process, so it stays responsive and SIGTERM still shuts down
+  # cleanly.
+  #
+  # Only when there *are* plain arguments. With none — a bare `./o11y-proxy`, `mix run`,
+  # or the tarball's `bin/o11y_proxy start`, which passes `--no-halt` — `Kernel.CLI` is
+  # harmless, and the at_exit hook above is the less exotic mechanism. A CLI subcommand
+  # never reaches either: it halts inside `start/2`.
+  defp block_if_plain_args do
+    unless Code.ensure_loaded?(Mix) or O11yProxy.CLI.argv() == [] do
+      Process.sleep(:infinity)
     end
   end
 

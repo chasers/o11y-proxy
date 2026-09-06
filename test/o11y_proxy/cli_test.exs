@@ -32,6 +32,12 @@ defmodule O11yProxy.CLITest do
       assert stderr =~ "o11y-proxy: query requires --signal"
     end
 
+    test "--version ends in exactly one newline" do
+      assert {output, 0} = run(["--version"])
+      assert String.ends_with?(output, "\n")
+      refute String.ends_with?(output, "\n\n")
+    end
+
     test "an unknown command exits 1" do
       assert {stderr, 1} = run_stderr(["quesry"])
       assert stderr =~ "unknown command: quesry"
