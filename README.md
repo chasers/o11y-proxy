@@ -104,7 +104,7 @@ o11y-proxy context --trace-id 4bf92f3577b34da6a3ce929d0e0e4736 | jq
 No trace ID? Two other ways in:
 
 ```bash
-o11y-proxy context --error-id 7627311504          # start from a Sentry issue
+o11y-proxy context --error-id 123456789          # start from a Sentry issue
 o11y-proxy context --service checkout-api --from now-1h --to now
 ```
 
@@ -519,7 +519,7 @@ Two other ways in, when you have no trace ID:
 
 ```json
 POST /v1/context
-{"error_id": "7627311504"}
+{"error_id": "123456789"}
 
 POST /v1/context
 {"from": "now-1h", "to": "now", "service": "checkout-api"}
