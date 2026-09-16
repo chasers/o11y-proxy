@@ -74,12 +74,11 @@ jobs:
   # which is Burrito's whole trick — it fetches a precompiled ERTS per target and wraps it
   # with a Zig-built launcher.
   #
-  # These binaries deliberately do *not* carry a working `s3` backend. Burrito's ERTS is
-  # musl-linked (`libc.musl-*.so.1`) while adbc's precompiled DuckDB NIF is glibc-linked
-  # and pulls in libstdc++, and a musl process cannot dlopen a glibc shared library.
-  # Building each target on a matching host would not change that — it is a libc mismatch,
-  # not an architecture one. The tarballs below are the S3-capable artifact; the binary
-  # says so in as many words, and the last smoke step here holds it to that.
+  # The Linux binaries carry DuckDB; the macOS ones do not. Burrito's ERTS is musl-linked
+  # (`libc.musl-*.so.1`) and adbc's precompiled NIF is glibc-linked, so `mix duckdb.stage`
+  # cross-builds the musl half first — see its moduledoc for the five pieces involved.
+  # There is no darwin-native build here, so macOS binaries get their natives stripped and
+  # refuse an `s3` source with a message pointing at the tarball.
   binaries:
     needs: resolve
     if: needs.resolve.outputs.build == 'true'
@@ -122,6 +121,17 @@ jobs:
 
       - run: mix deps.get
 
+      # cmake and patchelf are for `mix duckdb.stage` only; Zig above does the compiling.
+      - name: Install the cross-build toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake patchelf
+
+      # Cross-builds adbc's driver manager and NIF against musl and fetches DuckDB's own
+      # musl libduckdb, so the Linux binaries get a working `s3` backend. See the task's
+      # moduledoc for why each piece is needed. The macOS targets are not staged and the
+      # release step strips their natives instead.
+      - name: Stage musl DuckDB for the Linux targets
+        run: MIX_ENV=prod mix duckdb.stage
+
       - name: Build all targets
         run: MIX_ENV=prod mix release --overwrite
 
@@ -158,15 +168,17 @@ jobs:
           echo "binary never answered on /healthz" >&2
           exit 1
 
-      # The known limitation, pinned. An `s3` source in a single-file binary must fail with
-      # the sentence that tells someone what to do instead — not a NIF stacktrace and a
-      # crash dump, which is what it did before O11yProxy.Backends.S3.start_duckdb/0 caught
-      # it. If adbc ever ships a musl NIF this test fails, which is the right prompt to
-      # delete it and the caveat in the README together.
-      - name: The binary refuses an s3 source with an actionable message
+      # The whole point of `mix duckdb.stage`, pinned. This is a five-link chain — musl
+      # NIF, musl driver manager, musl libduckdb under the runtime triplet's filename,
+      # bundled libstdc++/libgcc_s, and `$ORIGIN` RPATHs — and every link failed at least
+      # once while it was being built. Any of them regressing silently turns a working
+      # binary back into one that crashes on the user's first `s3` source, so query for
+      # real rather than settling for a boot.
+      - name: The binary can query the s3 backend
         run: |
           set -euo pipefail
           workdir=$(mktemp -d)
+          cp -R "$GITHUB_WORKSPACE/test/fixtures/s3" "$workdir/fixtures"
           cat > "$workdir/o11y.yaml" <<YAML
           server:
             port: 4126
@@ -175,7 +187,7 @@ jobs:
             - name: archive
               backend: s3
               signal: logs
-              uri: $GITHUB_WORKSPACE/test/fixtures/s3/logs/**/*.parquet
+              uri: $workdir/fixtures/logs/**/*.parquet
               format: parquet
               mapping:
                 timestamp: ts
@@ -183,15 +195,49 @@ jobs:
                 body: message
                 service: service
                 attributes: attrs
+              hints:
+                partition_key: ts
+                hive_date_column: dt
           YAML
           cd "$workdir"
-          if "$GITHUB_WORKSPACE/burrito_out/o11y_proxy_linux_x86_64" sources > out.log 2>&1; then
-            echo "expected the binary to refuse an s3 source" >&2
-            cat out.log >&2
-            exit 1
-          fi
-          grep -q 'does not work in the single-file binary' out.log
-          echo "binary refused the s3 source cleanly"
+          ("$GITHUB_WORKSPACE/burrito_out/o11y_proxy_linux_x86_64" serve > serve.log 2>&1 &)
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:4126/healthz > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:4126/healthz \
+            || { echo "binary never answered on /healthz" >&2; cat serve.log >&2; exit 1; }
+
+          body=$(curl -sf http://127.0.0.1:4126/v1/query \
+            -H 'content-type: application/json' \
+            -d '{"sources":["archive"],"signal":"logs","from":"2026-09-16T00:00:00Z","to":"2026-09-17T00:00:00Z","mode":"full","limit":2}')
+          echo "$body"
+          echo "$body" | grep -q 'payments-db connection refused' \
+            || { echo "DuckDB did not answer inside the binary" >&2; cat serve.log >&2; exit 1; }
+          echo "binary queried DuckDB over musl"
+          # Leave nothing running. The CLI smoke step below asserts on a bare `sources`
+          # against an empty config, and a server this step left behind is exactly the kind
+          # of thing that makes that assertion fail somewhere else.
+          pkill -f o11y_proxy_linux_x86_64 || true
+
+      # Only on failure, and only worth the lines because the failure mode is a dynamic
+      # loader picking a library you did not mean — which the error message describes from
+      # the loader's point of view, not yours. This says what was actually in the payload
+      # and what it asked for.
+      - name: What the payload actually contained
+        if: failure()
+        run: |
+          set -uo pipefail
+          priv=$(echo "$HOME"/.local/share/.burrito/o11y_proxy_erts-*/lib/adbc-*/priv)
+          echo "--- $priv"
+          ls -la "$priv" "$priv/lib" 2>&1 || true
+          for so in "$priv"/adbc_nif.so "$priv"/lib/*.so*; do
+            echo "--- $so"
+            readelf -d "$so" 2>/dev/null | grep -E "NEEDED|RPATH|RUNPATH" || true
+          done
+          echo "--- LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"
+          echo "--- host libstdc++"
+          ls -la /lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/libstdc++.so.6 2>&1 || true
 
       # The CLI is half of what this binary is, and every bug found in it during
       # development was invisible to `mix test` because it lived in how a release boots —
@@ -212,12 +258,20 @@ jobs:
           cd "$workdir"
 
           # --help/--version are ours; if Kernel.CLI ever saw them it would swallow them.
-          "$bin" --version | grep -qE '^o11y-proxy [0-9]+\.[0-9]+\.[0-9]+$'
-          "$bin" --help | grep -q 'USAGE'
+          # Every assertion below says what it actually got. They are all `grep -q` and
+          # `test`, which fail silently, and a silent failure in a 40-line script is a
+          # second debugging session on top of the first one.
+          version=$("$bin" --version)
+          grep -qE '^o11y-proxy [0-9]+\.[0-9]+\.[0-9]+$' <<<"$version" \
+            || { echo "unexpected --version: $version" >&2; exit 1; }
+          "$bin" --help | grep -q 'USAGE' || { echo "--help printed no USAGE" >&2; exit 1; }
 
           # Subcommands: JSON on stdout, exit 0, nothing from Kernel.CLI on stderr.
-          test "$("$bin" sources 2>/dev/null)" = '{"sources":[]}'
-          "$bin" health 2>/dev/null | grep -q '"sources"'
+          sources=$("$bin" sources 2>/dev/null)
+          test "$sources" = '{"sources":[]}' \
+            || { echo "unexpected sources output: $sources" >&2; exit 1; }
+          "$bin" health 2>/dev/null | grep -q '"sources"' \
+            || { echo "health printed no sources key" >&2; exit 1; }
           for cmd in --version --help sources health; do
             if "$bin" "$cmd" 2>&1 | grep -q 'No file named'; then
               echo "Kernel.CLI processed our argv on: $cmd" >&2

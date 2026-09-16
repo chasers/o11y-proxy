@@ -1,0 +1,5 @@
+#!/bin/sh
+# CMake wants a single-word compiler and no per-invocation env, so the target is baked in
+# rather than passed through ZIG_TARGET — set(ENV{}) in a toolchain file applies only
+# during configure, and the build step would lose it.
+exec zig cc -target x86_64-linux-musl "$@"

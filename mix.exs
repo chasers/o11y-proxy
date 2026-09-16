@@ -14,10 +14,14 @@ defmodule O11yProxy.MixProject do
       # `:ex_unit` because elixirc_paths/1 compiles test/support in the test env, and CI
       # runs dialyzer there — O11yProxy.BackendCase calls ExUnit.Assertions, which is not
       # otherwise in the PLT. Without it dialyzer is green locally in :dev and red in CI.
+      #
+      # `:burrito` because it is a `runtime: false` dependency, so it stays out of the PLT
+      # by default, and `O11yProxy.Burrito.DuckDBNatives` implements one of its behaviours.
+      # `:mix` for `Mix.Tasks.Duckdb.Stage`, which is build-time code living under lib/.
       dialyzer: [
         plt_local_path: "priv/plts",
         plt_core_path: "priv/plts",
-        plt_add_apps: [:ex_unit]
+        plt_add_apps: [:ex_unit, :burrito, :mix]
       ]
     ]
   end
@@ -47,14 +51,17 @@ defmodule O11yProxy.MixProject do
         # keep_alive_if_release/0 in application.ex).
         steps: release_steps(),
         burrito: [
-          # `skip_nifs: true` on every target because of `adbc`. Burrito's cross-build
-          # phase finds any dependency using `:elixir_make` and re-runs its Makefile for
-          # the target triplet — for adbc that means building ADBC and DuckDB from C++
-          # source, which needs cmake and fails the release with `cmake: not found` deep
-          # into the build. There is nothing to gain by succeeding either: the binaries
-          # cannot load a DuckDB NIF at all (musl ERTS, glibc NIF), which is what
-          # drop_duckdb_natives/1 below and the `s3` caveat in the README are about. adbc
-          # is this project's only `:elixir_make` dependency, so nothing else is skipped.
+          # `skip_nifs: true` on every target because Burrito's own NIF cross-build does
+          # not fit adbc: it runs `make all`, which stops at the driver manager and never
+          # produces `adbc_nif.so`, and it neither passes `FINE_INCLUDE_DIR` nor copies the
+          # result back into the payload. `mix duckdb.stage` does that job properly, and
+          # `O11yProxy.Burrito.DuckDBNatives` installs what it staged. adbc is this
+          # project's only `:elixir_make` dependency, so nothing else is affected.
+          #
+          # The step also decides what a target gets: musl DuckDB where it is staged, and
+          # nothing at all otherwise — ~25MB of libraries that cannot load is worse than
+          # an honest error. macOS is the "otherwise": those need a darwin-native build.
+          extra_steps: [patch: [post: [O11yProxy.Burrito.DuckDBNatives]]],
           targets: [
             linux_aarch64: [os: :linux, cpu: :aarch64, skip_nifs: true],
             linux_x86_64: [os: :linux, cpu: :x86_64, skip_nifs: true],
@@ -67,15 +74,14 @@ defmodule O11yProxy.MixProject do
   end
 
   # Burrito cross-compiles the four single-file binaries and needs Zig on the host; the
-  # OTP tarball needs neither. The release workflow builds a *native* tarball per platform
-  # — that is the artifact the `s3` backend works in, since its DuckDB NIF is glibc-linked
-  # and Burrito's ERTS is musl-linked — and those jobs have no use for the binaries.
+  # OTP tarball needs neither, and the jobs that build a native tarball per platform have
+  # no use for the binaries.
   #
   #     O11Y_PROXY_SKIP_BURRITO=1 MIX_ENV=prod mix release   # tarball only, no Zig needed
   defp release_steps do
     if System.get_env("O11Y_PROXY_SKIP_BURRITO") in ["1", "true"],
       do: [:assemble, &drop_dev_priv/1, :tar],
-      else: [:assemble, &drop_dev_priv/1, :tar, &drop_duckdb_natives/1, &Burrito.wrap/1]
+      else: [:assemble, &drop_dev_priv/1, :tar, &Burrito.wrap/1]
   end
 
   # Mix copies `priv/` into the release wholesale, and `priv/plts` is where the `dialyzer:`
@@ -84,20 +90,6 @@ defmodule O11yProxy.MixProject do
   # them too.
   defp drop_dev_priv(release) do
     release.path |> Path.join("lib/o11y_proxy-*/priv/plts") |> Path.wildcard() |> rm_all()
-    release
-  end
-
-  # Runs after `:tar` and before `Burrito.wrap/1`, so the tarball keeps DuckDB and the
-  # single-file binaries do not.
-  #
-  # They cannot use it either way: Burrito's ERTS is musl-linked and adbc's precompiled
-  # DuckDB NIF is glibc-linked, so it never loads there. Carrying `libduckdb` anyway added
-  # ~25MB to every binary for a backend that cannot run in them. Only the shared libraries
-  # go; `adbc_nif.so` stays, which keeps the failure the `:not_loaded` one that
-  # `O11yProxy.Backends.S3.start_duckdb/0` turns into an actionable message, and keeps the
-  # `adbc` application loadable so the release still boots.
-  defp drop_duckdb_natives(release) do
-    release.path |> Path.join("lib/adbc-*/priv/{lib,include}") |> Path.wildcard() |> rm_all()
     release
   end
 
