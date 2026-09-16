@@ -311,9 +311,10 @@ If your records are nested rather than one-row-per-line — CloudWatch's are —
 names. [`examples/cloudwatch-s3/`](examples/cloudwatch-s3/) is a worked setup, log group to
 query.
 
-⚠️ **The macOS single-file binaries carry no `s3` backend** — use the release tarball or run
-from source. The Linux binaries are fine; see [Building the binaries](#developing) for why
-the two differ.
+⚠️ **The macOS single-file binaries carry no `s3` backend.** The Linux binaries are fine.
+On a Mac, run from source, or run the macOS tarball as a daemon and use HTTP — note that
+the tarball gives you `bin/o11y_proxy daemon`, not the one-shot CLI. See
+[Building the binaries](#developing) for why the artifacts differ.
 
 </details>
 
@@ -401,12 +402,21 @@ tarball — no Zig needed — set `O11Y_PROXY_SKIP_BURRITO=1`.
 
 **The `s3` backend works everywhere except the macOS binaries.**
 
-| artifact | `s3` backend | notes |
-| --- | --- | --- |
-| `o11y_proxy_linux_{x86_64,aarch64}` | ✓ | DuckDB cross-built against musl by `mix duckdb.stage` |
-| `o11y_proxy_macos_*` | ✗ | refuses an `s3` source at boot with a message saying this |
-| `o11y_proxy-<version>-<platform>.tar.gz` | ✓ | native per platform; also what you want under systemd |
-| source install | ✓ | |
+| artifact | `s3` backend | one-shot CLI | notes |
+| --- | --- | --- | --- |
+| `o11y_proxy_linux_{x86_64,aarch64}` | ✓ | ✓ | DuckDB cross-built against musl by `mix duckdb.stage` |
+| `o11y_proxy_macos_*` | ✗ | ✓ | refuses an `s3` source at boot with a message saying this |
+| `o11y_proxy-<version>-<platform>.tar.gz` | ✓ | ✗ | `start`/`daemon`/`rpc` only — see below |
+| source install | ✓ | ✓ | |
+
+**The tarball has no one-shot CLI**, which is easy to assume it does. `o11y-proxy sources`
+works because the single-file binary passes your argv to the BEAM as plain arguments, which
+`Application.start/2` intercepts before `Kernel.CLI` can (see `O11yProxy.CLI`'s moduledoc).
+The standard release script has its own command list — `start`, `daemon`, `eval`, `rpc` —
+and `./bin/o11y_proxy sources` just prints that list. Use `daemon` plus HTTP, or install
+from source.
+
+The one combination not available today is a Mac, a single binary, and `s3` together.
 
 Burrito's ERTS is musl-linked and the NIF `adbc` ships is glibc-linked, so a binary cannot
 load the stock one — `mix duckdb.stage` builds a musl one instead. It needs `cmake`, `zig`
