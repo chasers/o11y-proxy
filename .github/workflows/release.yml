@@ -101,10 +101,16 @@ jobs:
 
       - run: mix deps.get
 
-      # Explicitly, because the stage task reads adbc's priv directory rather than building
-      # anything: the driver download is what `config :adbc, :drivers` triggers here.
+      # The stage task reads adbc's priv directory rather than building anything, so the
+      # build has to happen first; this is also where `config :adbc, :drivers` downloads
+      # DuckDB's macOS library.
+      #
+      # All deps, not `deps.compile adbc`: adbc's own dependencies (decimal, table, fine,
+      # elixir_make, cc_precompiler) would not be built for this MIX_ENV yet, and naming
+      # one dependency makes Mix refuse with "the dependency build is outdated" for each of
+      # them rather than building them.
       - name: Build adbc natively
-        run: MIX_ENV=prod mix deps.compile adbc
+        run: MIX_ENV=prod mix deps.compile
 
       - name: Stage DuckDB for macos_silicon
         run: MIX_ENV=prod mix duckdb.stage macos_silicon
