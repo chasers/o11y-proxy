@@ -73,7 +73,8 @@ defmodule O11yProxy.ResponseError do
        when unreachable in [
               :clickhouse_unreachable,
               :victoriametrics_unreachable,
-              :sentry_unreachable
+              :sentry_unreachable,
+              :s3_unreachable
             ] do
     %{code: "unreachable", message: to_string(detail), retry_after_ms: nil}
   end

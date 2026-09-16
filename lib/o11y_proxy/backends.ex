@@ -9,6 +9,7 @@ defmodule O11yProxy.Backends do
     "clickhouse" => O11yProxy.Backends.ClickHouse,
     "victoriametrics" => O11yProxy.Backends.VictoriaMetrics,
     "sentry" => O11yProxy.Backends.Sentry,
+    "s3" => O11yProxy.Backends.S3,
     "logflare" => O11yProxy.Backends.Logflare
   }
 

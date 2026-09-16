@@ -195,4 +195,22 @@ defmodule O11yProxy.ConfigTest do
       assert is_binary(Config.format_error({:something_new, :entirely}))
     end
   end
+
+  describe "the configs this repo ships as documentation" do
+    # These are what someone copies. A config that no longer validates is a worse bug than
+    # a stale sentence, because it fails at *their* boot rather than in review — and the
+    # per-backend `config_schema/0` they are written against is free to change underneath
+    # them. The `setup` above swaps the backend registry for the fake one, so restore it.
+    setup do
+      Application.delete_env(:o11y_proxy, :backends)
+      :ok
+    end
+
+    for path <- ["examples/cloudwatch-s3/o11y.yaml", "docker/o11y.yaml"] do
+      test "#{path} validates against the real backend registry" do
+        assert {:ok, %{sources: [_ | _] = sources}} = Config.load(path: unquote(path))
+        assert Enum.all?(sources, &is_atom(&1.backend))
+      end
+    end
+  end
 end

@@ -6,10 +6,11 @@ description: Debug production issues (errors, latency, log spikes) with the o11y
 # o11y-proxy debugging loop
 
 `o11y-proxy` is one command in front of every observability backend (ClickHouse-backed
-logs and traces, VictoriaMetrics, Sentry). It exists so you don't need to learn each
-backend's query dialect to debug production — but its bigger job is protecting your
-context window. A naive investigation pulls thousands of raw log lines; this tool is built
-to get you to a root cause in a handful of small, aggregated calls instead.
+logs and traces, VictoriaMetrics, Sentry, and log archives in S3). It exists so you don't
+need to learn each backend's query dialect to debug production — but its bigger job is
+protecting your context window. A naive investigation pulls thousands of raw log lines;
+this tool is built to get you to a root cause in a handful of small, aggregated calls
+instead.
 
 There is nothing to start and no port to check. Every command is one shot: it answers and
 exits. If a daemon happens to be running it will use it, and if not it does the work

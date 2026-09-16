@@ -70,7 +70,17 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
+  # The single-file binaries. Cross-compiled for all four targets from one Linux runner,
+  # which is Burrito's whole trick — it fetches a precompiled ERTS per target and wraps it
+  # with a Zig-built launcher.
+  #
+  # These binaries deliberately do *not* carry a working `s3` backend. Burrito's ERTS is
+  # musl-linked (`libc.musl-*.so.1`) while adbc's precompiled DuckDB NIF is glibc-linked
+  # and pulls in libstdc++, and a musl process cannot dlopen a glibc shared library.
+  # Building each target on a matching host would not change that — it is a libc mismatch,
+  # not an architecture one. The tarballs below are the S3-capable artifact; the binary
+  # says so in as many words, and the last smoke step here holds it to that.
+  binaries:
     needs: resolve
     if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
@@ -115,20 +125,16 @@ jobs:
       - name: Build all targets
         run: MIX_ENV=prod mix release --overwrite
 
-      # The OTP release tarball is built for the *runner's* platform only (linux x86_64,
-      # glibc) — unlike the Burrito binaries, which are cross-compiled for four targets.
-      # Name it accordingly so nobody downloads it expecting it to run on a Mac.
-      - name: Name the release tarball for its platform
-        run: |
-          set -euo pipefail
-          version=$(grep -m1 'version: "' mix.exs | sed 's/.*version: "\([^"]*\)".*/\1/')
-          mv "_build/prod/o11y_proxy-${version}.tar.gz" \
-             "burrito_out/o11y_proxy-${version}-linux-x86_64.tar.gz"
+      # The tarball this also emits is the runner's own platform and is built properly, by
+      # name, in the `tarballs` matrix below. Drop it so it cannot be uploaded twice under
+      # two different names.
+      - name: Discard the incidental tarball
+        run: rm -f _build/prod/o11y_proxy-*.tar.gz
 
-      # Don't ship artifacts nobody has run. The runner is linux/x86_64, so both the
-      # single-file binary and the release tarball are testable here — boot each against a
-      # minimal config and require a real answer from /healthz before anything is uploaded.
-      # (A bare `./o11y_proxy` with no flags must stay up: see keep_alive_if_release/0.)
+      # Don't ship artifacts nobody has run. The runner is linux/x86_64, so the single-file
+      # binary is testable here — boot it against a minimal config and require a real
+      # answer from /healthz before anything is uploaded. (A bare `./o11y_proxy` with no
+      # flags must stay up: see keep_alive_if_release/0.)
       - name: Smoke-test the linux x86_64 binary
         run: |
           set -euo pipefail
@@ -152,31 +158,40 @@ jobs:
           echo "binary never answered on /healthz" >&2
           exit 1
 
-      - name: Smoke-test the release tarball
+      # The known limitation, pinned. An `s3` source in a single-file binary must fail with
+      # the sentence that tells someone what to do instead — not a NIF stacktrace and a
+      # crash dump, which is what it did before O11yProxy.Backends.S3.start_duckdb/0 caught
+      # it. If adbc ever ships a musl NIF this test fails, which is the right prompt to
+      # delete it and the caveat in the README together.
+      - name: The binary refuses an s3 source with an actionable message
         run: |
           set -euo pipefail
           workdir=$(mktemp -d)
-          tar xzf burrito_out/o11y_proxy-*-linux-x86_64.tar.gz -C "$workdir"
-          cat > "$workdir/o11y.yaml" <<'YAML'
+          cat > "$workdir/o11y.yaml" <<YAML
           server:
-            port: 4124
+            port: 4126
             auth: none
-          sources: []
+          sources:
+            - name: archive
+              backend: s3
+              signal: logs
+              uri: $GITHUB_WORKSPACE/test/fixtures/s3/logs/**/*.parquet
+              format: parquet
+              mapping:
+                timestamp: ts
+                severity: level
+                body: message
+                service: service
+                attributes: attrs
           YAML
           cd "$workdir"
-          ./bin/o11y_proxy daemon
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:4124/healthz > /dev/null; then
-              echo "tarball booted; /healthz: $(curl -s http://127.0.0.1:4124/healthz)"
-              ./bin/o11y_proxy stop
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "release tarball never answered on /healthz" >&2
-          ./bin/o11y_proxy stop || true
-          exit 1
-
+          if "$GITHUB_WORKSPACE/burrito_out/o11y_proxy_linux_x86_64" sources > out.log 2>&1; then
+            echo "expected the binary to refuse an s3 source" >&2
+            cat out.log >&2
+            exit 1
+          fi
+          grep -q 'does not work in the single-file binary' out.log
+          echo "binary refused the s3 source cleanly"
 
       # The CLI is half of what this binary is, and every bug found in it during
       # development was invisible to `mix test` because it lived in how a release boots —
@@ -234,8 +249,137 @@ jobs:
           echo "\`serve\` never answered on /healthz" >&2
           cat serve.log >&2
           exit 1
-      # Only now that every artifact has booted and answered. On the push path this is
-      # what creates the release; on the other two it already exists and this is a no-op.
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-binaries
+          path: burrito_out/*
+          if-no-files-found: error
+
+  # The OTP release tarballs, one per platform, each built on a host of that platform.
+  # This is what the `s3` backend ships in: a tarball carries the build host's own
+  # glibc-linked ERTS, so adbc's DuckDB NIF loads. It is also the artifact you want under
+  # systemd, since it keeps the standard `bin/o11y_proxy start|daemon|stop|remote` script
+  # (Burrito binaries have no daemon/stop/remote — see keep_alive_if_release/0).
+  #
+  # No Intel-macOS leg: GitHub retired the `macos-13` runners, and a tarball is native by
+  # construction, so there is nowhere to build one. Intel Mac users build their own with
+  # `MIX_ENV=prod mix release`.
+  tarballs:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+          - runner: macos-14
+            platform: macos-silicon
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.16"
+          elixir-version: "1.18.5"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ matrix.platform }}-tar-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ matrix.platform }}-tar-
+
+      - run: mix deps.get
+
+      # O11Y_PROXY_SKIP_BURRITO drops the Burrito step (see release_steps/0 in mix.exs), so
+      # these jobs need no Zig and build only what they ship.
+      - name: Build the native tarball
+        run: O11Y_PROXY_SKIP_BURRITO=1 MIX_ENV=prod mix release --overwrite
+
+      - name: Name it for its platform
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 'version: "' mix.exs | sed 's/.*version: "\([^"]*\)".*/\1/')
+          mkdir -p dist
+          mv "_build/prod/o11y_proxy-${version}.tar.gz" \
+             "dist/o11y_proxy-${version}-${{ matrix.platform }}.tar.gz"
+
+      # Boot it, and query the `s3` backend for real against the committed Parquet fixture.
+      # This is the step that proves DuckDB's NIF actually loaded on this platform — the
+      # thing that does *not* hold for the single-file binaries. An empty `sources: []`
+      # smoke would have shipped a broken adapter three times over.
+      - name: Smoke-test the tarball, including an s3 query
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          tar xzf dist/o11y_proxy-*.tar.gz -C "$workdir"
+          cp -R test/fixtures/s3 "$workdir/fixtures"
+          cat > "$workdir/o11y.yaml" <<YAML
+          server:
+            port: 4124
+            auth: none
+          sources:
+            - name: archive
+              backend: s3
+              signal: logs
+              uri: $workdir/fixtures/logs/**/*.parquet
+              format: parquet
+              mapping:
+                timestamp: ts
+                severity: level
+                body: message
+                service: service
+                attributes: attrs
+              hints:
+                partition_key: ts
+                hive_date_column: dt
+          YAML
+          cd "$workdir"
+          ./bin/o11y_proxy daemon
+          trap './bin/o11y_proxy stop || true' EXIT
+
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:4124/healthz > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:4124/healthz \
+            || { echo "release tarball never answered on /healthz" >&2; exit 1; }
+
+          body=$(curl -sf http://127.0.0.1:4124/v1/query \
+            -H 'content-type: application/json' \
+            -d '{"sources":["archive"],"signal":"logs","from":"2026-09-16T00:00:00Z","to":"2026-09-17T00:00:00Z","mode":"full","limit":2}')
+          echo "$body"
+          echo "$body" | grep -q 'payments-db connection refused' \
+            || { echo "the s3 backend returned no rows from the fixture" >&2; exit 1; }
+          echo "tarball booted and DuckDB answered"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Only now that every artifact has booted and answered. On the push path this is what
+  # creates the release; on the other two it already exists and this is a no-op.
+  publish:
+    needs: [resolve, binaries, tarballs]
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
       - name: Create the release if it doesn't exist yet
         env:
           GH_TOKEN: ${{ github.token }}
@@ -259,5 +403,5 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          ls -la burrito_out/
-          gh release upload "$TAG" burrito_out/* --clobber --repo "$GITHUB_REPOSITORY"
+          ls -la dist/
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

@@ -3,7 +3,7 @@
   "info": {
     "title": "o11y-proxy",
     "version": "0.2.1",
-    "description": "One HTTP+JSON interface over Sentry, ClickHouse, and VictoriaMetrics for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies."
+    "description": "One HTTP+JSON interface over Sentry, ClickHouse, VictoriaMetrics, and object storage queried with DuckDB for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies."
   },
   "servers": [
     {
@@ -593,6 +593,7 @@
               "clickhouse",
               "victoriametrics",
               "sentry",
+              "s3",
               "logflare"
             ]
           },
