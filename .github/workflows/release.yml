@@ -215,6 +215,10 @@ jobs:
           echo "$body" | grep -q 'payments-db connection refused' \
             || { echo "DuckDB did not answer inside the binary" >&2; cat serve.log >&2; exit 1; }
           echo "binary queried DuckDB over musl"
+          # Leave nothing running. The CLI smoke step below asserts on a bare `sources`
+          # against an empty config, and a server this step left behind is exactly the kind
+          # of thing that makes that assertion fail somewhere else.
+          pkill -f o11y_proxy_linux_x86_64 || true
 
       # Only on failure, and only worth the lines because the failure mode is a dynamic
       # loader picking a library you did not mean — which the error message describes from
@@ -254,12 +258,20 @@ jobs:
           cd "$workdir"
 
           # --help/--version are ours; if Kernel.CLI ever saw them it would swallow them.
-          "$bin" --version | grep -qE '^o11y-proxy [0-9]+\.[0-9]+\.[0-9]+$'
-          "$bin" --help | grep -q 'USAGE'
+          # Every assertion below says what it actually got. They are all `grep -q` and
+          # `test`, which fail silently, and a silent failure in a 40-line script is a
+          # second debugging session on top of the first one.
+          version=$("$bin" --version)
+          grep -qE '^o11y-proxy [0-9]+\.[0-9]+\.[0-9]+$' <<<"$version" \
+            || { echo "unexpected --version: $version" >&2; exit 1; }
+          "$bin" --help | grep -q 'USAGE' || { echo "--help printed no USAGE" >&2; exit 1; }
 
           # Subcommands: JSON on stdout, exit 0, nothing from Kernel.CLI on stderr.
-          test "$("$bin" sources 2>/dev/null)" = '{"sources":[]}'
-          "$bin" health 2>/dev/null | grep -q '"sources"'
+          sources=$("$bin" sources 2>/dev/null)
+          test "$sources" = '{"sources":[]}' \
+            || { echo "unexpected sources output: $sources" >&2; exit 1; }
+          "$bin" health 2>/dev/null | grep -q '"sources"' \
+            || { echo "health printed no sources key" >&2; exit 1; }
           for cmd in --version --help sources health; do
             if "$bin" "$cmd" 2>&1 | grep -q 'No file named'; then
               echo "Kernel.CLI processed our argv on: $cmd" >&2
