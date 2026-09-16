@@ -412,6 +412,12 @@ host does not help — it is a libc mismatch, not an architecture one. So:
 Intel macOS gets no published tarball — GitHub retired the `macos-13` runners and a tarball
 is native by construction. Build your own with `MIX_ENV=prod mix release`.
 
+This is a build-pipeline gap, not a law of nature, and it is being closed: DuckDB publishes
+official musl builds of `libduckdb`, and `adbc` only cross-compiles a thin driver-manager
+shim (it honours `CMAKE_TOOLCHAIN_FILE`, and Burrito exposes `nif_env`/`nif_make_args` per
+target), so a musl NIF build would give the Linux binaries a working `s3` backend without
+anyone compiling DuckDB. The macOS binaries would still need a darwin-native NIF.
+
 **Two traps that will cost you an afternoon:**
 
 1. **Burrito installs by version.** It unpacks to
