@@ -3,14 +3,16 @@ defmodule O11yProxy.Burrito.DuckDBNatives do
   Build-time only. A `Burrito.Builder.Step` that decides, per target, what DuckDB the
   single-file binary carries.
 
-  Burrito's ERTS is musl-linked, so the glibc NIF `adbc` ships by default cannot load
-  inside a binary — see `README.md`, "Building the binaries". For a target we have musl
-  artifacts staged for, this swaps them in; for every other target it strips the native
-  half entirely, because ~25MB of `libduckdb` that can never load is worse than nothing.
+  What a release builds by default is wrong for every target: the Linux binaries need a
+  musl DuckDB where adbc ships a glibc one, and the macOS binaries — cross-compiled from
+  Linux — would get Linux artifacts. So for a target with something staged, this swaps it
+  in; for one without, it strips the native half entirely, because ~25MB of `libduckdb`
+  that can never load is worse than an honest error at boot.
 
-  Artifacts are staged under `_build/duckdb-musl/<triplet>/` by `mix duckdb.stage`, which
-  is the piece that knows the download URLs. This step only moves files, so a release can
-  be built offline once they are staged.
+  Artifacts are staged under `_build/duckdb-natives/<triplet>/` by `mix duckdb.stage`,
+  which is the piece that knows how each target is built. This step only moves files, so a
+  release can be built offline once they are staged — and, more to the point, the macOS
+  ones can be staged on a macOS runner and carried here as a CI artifact.
 
   It runs `post` the `:patch` phase, after `Burrito.Steps.Patch.RecompileNIFs`, so it has
   the last word on the contents of `priv/`.
@@ -42,7 +44,7 @@ defmodule O11yProxy.Burrito.DuckDBNatives do
 
   @doc "Where `mix duckdb.stage` puts a target's musl artifacts."
   @spec staging_dir(String.t()) :: String.t()
-  def staging_dir(triplet), do: Path.join(["_build", "duckdb-musl", triplet])
+  def staging_dir(triplet), do: Path.join(["_build", "duckdb-natives", triplet])
 
   defp adbc_priv(work_dir) do
     work_dir |> Path.join("lib/adbc-*/priv") |> Path.wildcard() |> List.first()
