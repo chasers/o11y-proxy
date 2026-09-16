@@ -70,17 +70,62 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
+  # DuckDB for the macOS binary, built where it can be: on a Mac.
+  #
+  # Nothing here is cross-compiled. `mix deps.compile adbc` produces a darwin NIF and
+  # driver manager natively and fetches DuckDB's macOS library, which is why the macOS
+  # *tarball* has always worked. `mix duckdb.stage macos_silicon` lifts those out and adds
+  # `@loader_path` rpaths; the `binaries` job below then unpacks them into the payload it
+  # cross-compiles from Linux. No Intel leg — GitHub retired `macos-13`, and a native build
+  # needs a native host.
+  stage-macos:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.16"
+          elixir-version: "1.18.5"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: macos-stage-${{ hashFiles('mix.lock') }}
+          restore-keys: macos-stage-
+
+      - run: mix deps.get
+
+      # Explicitly, because the stage task reads adbc's priv directory rather than building
+      # anything: the driver download is what `config :adbc, :drivers` triggers here.
+      - name: Build adbc natively
+        run: MIX_ENV=prod mix deps.compile adbc
+
+      - name: Stage DuckDB for macos_silicon
+        run: MIX_ENV=prod mix duckdb.stage macos_silicon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-aarch64-macos
+          path: _build/duckdb-natives/aarch64-macos/*
+          if-no-files-found: error
+
   # The single-file binaries. Cross-compiled for all four targets from one Linux runner,
   # which is Burrito's whole trick — it fetches a precompiled ERTS per target and wraps it
   # with a Zig-built launcher.
   #
-  # The Linux binaries carry DuckDB; the macOS ones do not. Burrito's ERTS is musl-linked
-  # (`libc.musl-*.so.1`) and adbc's precompiled NIF is glibc-linked, so `mix duckdb.stage`
-  # cross-builds the musl half first — see its moduledoc for the five pieces involved.
-  # There is no darwin-native build here, so macOS binaries get their natives stripped and
-  # refuse an `s3` source with a message pointing at the tarball.
+  # Every target's DuckDB is staged rather than taken from the build: the Linux ones are
+  # cross-built against musl here (Burrito's ERTS is musl-linked and adbc's NIF is glibc),
+  # and the macOS one is downloaded from `stage-macos` because it cannot be cross-built at
+  # all. `macos_x86_64` has no staging and so carries no DuckDB; it refuses an `s3` source
+  # with a message pointing at the tarball.
   binaries:
-    needs: resolve
+    needs: [resolve, stage-macos]
     if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
 
@@ -127,10 +172,17 @@ jobs:
 
       # Cross-builds adbc's driver manager and NIF against musl and fetches DuckDB's own
       # musl libduckdb, so the Linux binaries get a working `s3` backend. See the task's
-      # moduledoc for why each piece is needed. The macOS targets are not staged and the
-      # release step strips their natives instead.
+      # moduledoc for why each piece is needed.
       - name: Stage musl DuckDB for the Linux targets
-        run: MIX_ENV=prod mix duckdb.stage
+        run: MIX_ENV=prod mix duckdb.stage linux_x86_64 linux_aarch64
+
+      # The macOS half, built on a Mac by `stage-macos` because it cannot be cross-built.
+      # It lands in the same place the Linux staging writes to, so the release step treats
+      # all three identically.
+      - uses: actions/download-artifact@v4
+        with:
+          name: duckdb-aarch64-macos
+          path: _build/duckdb-natives/aarch64-macos
 
       - name: Build all targets
         run: MIX_ENV=prod mix release --overwrite
@@ -310,6 +362,82 @@ jobs:
           path: burrito_out/*
           if-no-files-found: error
 
+  # The macOS binary is built on Linux and can only be run on a Mac, so its smoke test is
+  # its own job. Same bar as the Linux one: boot an `s3` source and get rows back, because
+  # the whole point of staging DuckDB for this target is that it works, and "it booted" was
+  # never the claim being made.
+  smoke-macos:
+    needs: [resolve, binaries]
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-binaries
+          path: burrito_out
+
+      - name: The macOS binary can query the s3 backend
+        run: |
+          set -euo pipefail
+          # Artifacts do not preserve the executable bit.
+          chmod +x burrito_out/o11y_proxy_macos_silicon
+
+          workdir=$(mktemp -d)
+          cp -R test/fixtures/s3 "$workdir/fixtures"
+          cat > "$workdir/o11y.yaml" <<YAML
+          server:
+            port: 4130
+            auth: none
+          sources:
+            - name: archive
+              backend: s3
+              signal: logs
+              uri: $workdir/fixtures/logs/**/*.parquet
+              format: parquet
+              mapping:
+                timestamp: ts
+                severity: level
+                body: message
+                service: service
+                attributes: attrs
+              hints:
+                partition_key: ts
+                hive_date_column: dt
+          YAML
+          cd "$workdir"
+          ("$GITHUB_WORKSPACE/burrito_out/o11y_proxy_macos_silicon" serve > serve.log 2>&1 &)
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:4130/healthz > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:4130/healthz \
+            || { echo "macOS binary never answered on /healthz" >&2; cat serve.log >&2; exit 1; }
+
+          body=$(curl -sf http://127.0.0.1:4130/v1/query \
+            -H 'content-type: application/json' \
+            -d '{"sources":["archive"],"signal":"logs","from":"2026-09-16T00:00:00Z","to":"2026-09-17T00:00:00Z","mode":"full","limit":2}')
+          echo "$body"
+          echo "$body" | grep -q 'payments-db connection refused' \
+            || { echo "DuckDB did not answer inside the macOS binary" >&2; cat serve.log >&2; exit 1; }
+          echo "macOS binary queried DuckDB"
+
+      - name: What the payload actually contained
+        if: failure()
+        run: |
+          set -uo pipefail
+          priv=$(echo "$HOME"/.local/share/.burrito/o11y_proxy_erts-*/lib/adbc-*/priv)
+          echo "--- $priv"
+          ls -la "$priv" "$priv/lib" 2>&1 || true
+          for so in "$priv"/adbc_nif.so "$priv"/lib/*; do
+            echo "--- $so"
+            otool -L "$so" 2>/dev/null | head -8 || true
+            otool -l "$so" 2>/dev/null | grep -A2 LC_RPATH || true
+            codesign -v "$so" 2>&1 | head -2 || true
+          done
+
   # The OTP release tarballs, one per platform, each built on a host of that platform.
   # This is what the `s3` backend ships in: a tarball carries the build host's own
   # glibc-linked ERTS, so adbc's DuckDB NIF loads. It is also the artifact you want under
@@ -423,7 +551,7 @@ jobs:
   # Only now that every artifact has booted and answered. On the push path this is what
   # creates the release; on the other two it already exists and this is a no-op.
   publish:
-    needs: [resolve, binaries, tarballs]
+    needs: [resolve, binaries, smoke-macos, tarballs]
     if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
 

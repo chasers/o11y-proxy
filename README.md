@@ -311,10 +311,10 @@ If your records are nested rather than one-row-per-line — CloudWatch's are —
 names. [`examples/cloudwatch-s3/`](examples/cloudwatch-s3/) is a worked setup, log group to
 query.
 
-⚠️ **The macOS single-file binaries carry no `s3` backend.** The Linux binaries are fine.
-On a Mac, run from source, or run the macOS tarball as a daemon and use HTTP — note that
-the tarball gives you `bin/o11y_proxy daemon`, not the one-shot CLI. See
-[Building the binaries](#developing) for why the artifacts differ.
+⚠️ **The Intel macOS binary carries no `s3` backend** — `o11y_proxy_macos_x86_64` only.
+Apple silicon and Linux binaries are fine. On an Intel Mac, run from source, or run the
+tarball as a daemon and use HTTP; note the tarball gives you `bin/o11y_proxy daemon`, not
+the one-shot CLI. See [Building the binaries](#developing) for why the artifacts differ.
 
 </details>
 
@@ -400,14 +400,18 @@ Binaries go to `burrito_out/`. The tarball goes to `_build/prod/`. You need Zig 
 `.tool-versions`) and `xz`. Windows targets need `7z` and are not built. To build only the
 tarball — no Zig needed — set `O11Y_PROXY_SKIP_BURRITO=1`.
 
-**The `s3` backend works everywhere except the macOS binaries.**
+**The `s3` backend works everywhere except the Intel macOS binary.**
 
 | artifact | `s3` backend | one-shot CLI | notes |
 | --- | --- | --- | --- |
 | `o11y_proxy_linux_{x86_64,aarch64}` | ✓ | ✓ | DuckDB cross-built against musl by `mix duckdb.stage` |
-| `o11y_proxy_macos_*` | ✗ | ✓ | refuses an `s3` source at boot with a message saying this |
+| `o11y_proxy_macos_silicon` | ✓ | ✓ | DuckDB built natively on a macOS runner and carried in |
+| `o11y_proxy_macos_x86_64` | ✗ | ✓ | refuses an `s3` source at boot with a message saying this |
 | `o11y_proxy-<version>-<platform>.tar.gz` | ✓ | ✗ | `start`/`daemon`/`rpc` only — see below |
 | source install | ✓ | ✓ | |
+
+The Intel macOS binary is the one gap, and it is not a technical one: GitHub retired the
+`macos-13` runners, a native build needs a native host, and there is nowhere to run one.
 
 **The tarball has no one-shot CLI**, which is easy to assume it does. `o11y-proxy sources`
 works because the single-file binary passes your argv to the BEAM as plain arguments, which
@@ -416,13 +420,12 @@ The standard release script has its own command list — `start`, `daemon`, `eva
 and `./bin/o11y_proxy sources` just prints that list. Use `daemon` plus HTTP, or install
 from source.
 
-The one combination not available today is a Mac, a single binary, and `s3` together.
-
-Burrito's ERTS is musl-linked and the NIF `adbc` ships is glibc-linked, so a binary cannot
-load the stock one — `mix duckdb.stage` builds a musl one instead. It needs `cmake`, `zig`
-and `patchelf`, runs automatically in the release workflow, and its moduledoc explains the
-five pieces that have to line up. macOS would need a darwin-native build, which nothing
-here does.
+A binary never uses the DuckDB the build produced. On Linux, Burrito's ERTS is musl-linked
+while the NIF `adbc` ships is glibc-linked, so `mix duckdb.stage` cross-builds a musl one;
+that path needs `cmake`, `zig` and `patchelf`, and the task's moduledoc walks through the
+five pieces that have to line up. On macOS nothing is cross-built at all — a macOS runner
+builds adbc natively and the release workflow carries the result to the Linux job that
+wraps the binaries. Both run automatically.
 
 ```sh
 mix duckdb.stage                 # both Linux targets

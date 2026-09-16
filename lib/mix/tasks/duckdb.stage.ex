@@ -1,15 +1,31 @@
 defmodule Mix.Tasks.Duckdb.Stage do
-  @shortdoc "Cross-builds DuckDB's native stack for Burrito's musl targets"
+  @shortdoc "Builds DuckDB's native stack for Burrito's targets"
 
   @moduledoc """
   Stages everything the `s3` backend needs inside a single-file binary, into
-  `_build/duckdb-musl/<burrito-triplet>/`, where `O11yProxy.Burrito.DuckDBNatives` picks
+  `_build/duckdb-natives/<burrito-triplet>/`, where `O11yProxy.Burrito.DuckDBNatives` picks
   it up during the release.
 
-      mix duckdb.stage                 # every Linux target
+      mix duckdb.stage                 # every target this host can build
       mix duckdb.stage linux_aarch64   # just one
 
-  Burrito's ERTS is musl-linked, so nothing glibc can load inside a binary. Four pieces
+  Two kinds of target, with nothing in common but the destination.
+
+  ## macOS — `macos_silicon`, and it must run on macOS
+
+  Nothing is cross-compiled and nothing is bundled. A macOS host has already built adbc
+  natively and linked it against its own libc++, which is why the macOS *tarball* has
+  always had a working `s3` backend; the binaries lack one only because they are
+  cross-compiled from Linux and so get Linux artifacts in the payload. This copies what the
+  host built out of adbc's `priv` and adds `@loader_path` rpaths so the libraries find each
+  other wherever Burrito unpacks them.
+
+  There is no `macos_x86_64`: GitHub retired the Intel runners, and a native build needs a
+  native host.
+
+  ## Linux — `linux_x86_64`, `linux_aarch64`
+
+  Burrito's ERTS is musl-linked, so nothing glibc can load inside a binary. Five pieces
   have to line up, and each one is a thing that was wrong the first time:
 
     * **`libduckdb`** — DuckDB publishes official musl builds, so this is a download, not a
@@ -28,9 +44,12 @@ defmodule Mix.Tasks.Duckdb.Stage do
       path, so every library gets `$ORIGIN` (and the NIF `$ORIGIN/lib`, since it sits a
       level up). Without this the driver manager loads and then `dlopen` of DuckDB fails
       looking for `libstdc++.so.6` that is sitting right next to it.
+    * **Unique names** for the bundled `libstdc++`/`libgcc_s`, because musl searches
+      `LD_LIBRARY_PATH` *before* rpath, so no rpath tagging can out-rank a host that
+      exports one covering its own glibc copies. See `rename_support_libs/2`.
 
-  Needs `cmake`, `zig` and `patchelf` on PATH. macOS targets are not handled: those need a
-  darwin-native build, which none of this addresses.
+  Needs `cmake`, `zig` and `patchelf` for the Linux path; `install_name_tool` and
+  `codesign` for the macOS one.
   """
 
   use Mix.Task
@@ -46,6 +65,7 @@ defmodule Mix.Tasks.Duckdb.Stage do
   # adbc computes inside the running binary, and the two genuinely differ.
   @targets %{
     "linux_aarch64" => %{
+      kind: :linux_musl,
       triplet: "aarch64-linux",
       runtime_triplet: "aarch64-linux-musl",
       zig_target: "aarch64-linux-musl",
@@ -53,11 +73,24 @@ defmodule Mix.Tasks.Duckdb.Stage do
       alpine_arch: "aarch64"
     },
     "linux_x86_64" => %{
+      kind: :linux_musl,
       triplet: "x86_64-linux",
       runtime_triplet: "x86_64-linux-musl",
       zig_target: "x86_64-linux-musl",
       duckdb_asset: "libduckdb-linux-amd64-musl.zip",
       alpine_arch: "x86_64"
+    },
+    # Nothing to cross-compile and nothing to bundle: a macOS host builds adbc natively
+    # and links against its own libc++, which is why the macOS *tarball* has always had a
+    # working `s3` backend. The binaries lack it only because they are cross-compiled from
+    # Linux, so the payload gets Linux artifacts. Staging on a macOS runner and handing the
+    # result to the Linux build is the whole fix.
+    #
+    # Must therefore be run *on* macOS. There is no `macos_x86_64` entry because GitHub
+    # retired the Intel runners, and a native build needs a native host.
+    "macos_silicon" => %{
+      kind: :darwin_native,
+      triplet: "aarch64-macos"
     }
   }
 
@@ -69,30 +102,86 @@ defmodule Mix.Tasks.Duckdb.Stage do
     :ok = Application.ensure_started(:inets)
     :ok = Application.ensure_started(:ssl)
 
-    ensure_tools!()
-
     names = if args == [], do: Map.keys(@targets), else: args
 
     Enum.each(names, fn name ->
       target = Map.get(@targets, name) || Mix.raise("unknown target #{name}")
+      ensure_tools!(target.kind)
       stage(name, target)
     end)
   end
 
   defp stage(name, target) do
-    dir = Path.join(["_build", "duckdb-musl", target.triplet])
+    dir = Path.join(["_build", "duckdb-natives", target.triplet])
     Mix.shell().info("staging #{name} -> #{dir}")
 
     File.rm_rf!(dir)
     File.mkdir_p!(dir)
 
+    stage_kind(target.kind, dir, target)
+
+    Mix.shell().info("staged #{name}")
+  end
+
+  defp stage_kind(:linux_musl, dir, target) do
     duckdb_driver(dir, target)
     support_libs(dir, target)
     adbc_natives(dir, target)
     rename_support_libs(dir, target)
     set_rpaths(dir)
+  end
 
-    Mix.shell().info("staged #{name}")
+  # The artifacts are already on this machine: `mix deps.compile adbc` built the NIF and
+  # the driver manager for this host, and adbc downloaded DuckDB's macOS library under the
+  # filename it looks for at runtime. Copy them out of adbc's priv and re-point their load
+  # paths at wherever Burrito unpacks the payload.
+  defp stage_kind(:darwin_native, dir, _target) do
+    priv = adbc_priv_dir()
+
+    nif = Path.join(priv, "adbc_nif.so")
+
+    File.exists?(nif) ||
+      Mix.raise("no adbc_nif.so at #{priv} — run `mix deps.compile adbc` first")
+
+    File.cp!(nif, Path.join(dir, "adbc_nif.so"))
+
+    libs = priv |> Path.join("lib/*") |> Path.wildcard() |> Enum.filter(&File.regular?/1)
+
+    libs == [] && Mix.raise("no libraries at #{priv}/lib — is the :duckdb driver configured?")
+
+    Enum.each(libs, &File.cp!(&1, Path.join(dir, Path.basename(&1))))
+
+    set_darwin_load_paths(dir)
+  end
+
+  defp adbc_priv_dir do
+    # `Application.app_dir/2` needs the app loaded; this task deliberately does not start
+    # it, and the path is derivable anyway.
+    Path.join([Mix.Project.build_path(), "lib", "adbc", "priv"])
+  end
+
+  # macOS has no `$ORIGIN`; the equivalent is `@loader_path`. Adding it as an LC_RPATH
+  # entry makes any `@rpath/…` install name in these libraries resolve next to whichever
+  # one is doing the loading, which is what Burrito's unpack location requires.
+  #
+  # `-add_rpath` fails if the entry is already present, and that is fine rather than fatal.
+  #
+  # Re-signing after is not optional on Apple silicon: editing a Mach-O invalidates its
+  # signature, and arm64 macOS refuses to load an image whose signature does not verify.
+  # An ad-hoc signature (`-`) is enough — this is not about notarization, only about the
+  # binary being intact.
+  defp set_darwin_load_paths(dir) do
+    for file <- Path.wildcard(Path.join(dir, "*")), File.regular?(file) do
+      rpath =
+        if Path.basename(file) == "adbc_nif.so", do: "@loader_path/lib", else: "@loader_path"
+
+      _ = System.cmd("install_name_tool", ["-add_rpath", rpath, file], stderr_to_stdout: true)
+
+      case System.cmd("codesign", ["--force", "--sign", "-", file], stderr_to_stdout: true) do
+        {_, 0} -> :ok
+        {out, code} -> Mix.raise("codesign failed on #{file} (#{code})\n#{out}")
+      end
+    end
   end
 
   defp duckdb_driver(dir, target) do
@@ -245,7 +334,7 @@ defmodule Mix.Tasks.Duckdb.Stage do
   end
 
   defp download(url, name) do
-    cache = Path.join(["_build", "duckdb-musl", "_cache"])
+    cache = Path.join(["_build", "duckdb-natives", "_cache"])
     File.mkdir_p!(cache)
     path = Path.join(cache, name)
 
@@ -271,8 +360,13 @@ defmodule Mix.Tasks.Duckdb.Stage do
     Path.join([to_string(:code.root_dir()), "erts-#{:erlang.system_info(:version)}", "include"])
   end
 
-  defp ensure_tools! do
-    Enum.each(["cmake", "zig", "patchelf"], fn tool ->
+  # Per-kind, because they share nothing: the Linux targets cross-compile and rewrite ELF,
+  # the macOS one copies what its own host already built and rewrites Mach-O.
+  defp ensure_tools!(:linux_musl), do: require_tools!(["cmake", "zig", "patchelf"])
+  defp ensure_tools!(:darwin_native), do: require_tools!(["install_name_tool", "codesign"])
+
+  defp require_tools!(tools) do
+    Enum.each(tools, fn tool ->
       System.find_executable(tool) || Mix.raise("#{tool} is required by mix duckdb.stage")
     end)
   end
