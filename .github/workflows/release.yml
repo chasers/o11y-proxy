@@ -216,6 +216,25 @@ jobs:
             || { echo "DuckDB did not answer inside the binary" >&2; cat serve.log >&2; exit 1; }
           echo "binary queried DuckDB over musl"
 
+      # Only on failure, and only worth the lines because the failure mode is a dynamic
+      # loader picking a library you did not mean — which the error message describes from
+      # the loader's point of view, not yours. This says what was actually in the payload
+      # and what it asked for.
+      - name: What the payload actually contained
+        if: failure()
+        run: |
+          set -uo pipefail
+          priv=$(echo "$HOME"/.local/share/.burrito/o11y_proxy_erts-*/lib/adbc-*/priv)
+          echo "--- $priv"
+          ls -la "$priv" "$priv/lib" 2>&1 || true
+          for so in "$priv"/adbc_nif.so "$priv"/lib/*.so*; do
+            echo "--- $so"
+            readelf -d "$so" 2>/dev/null | grep -E "NEEDED|RPATH|RUNPATH" || true
+          done
+          echo "--- LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"
+          echo "--- host libstdc++"
+          ls -la /lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/libstdc++.so.6 2>&1 || true
+
       # The CLI is half of what this binary is, and every bug found in it during
       # development was invisible to `mix test` because it lived in how a release boots —
       # `No file named serve` on an explicit subcommand, `--no-halt` from the tarball's

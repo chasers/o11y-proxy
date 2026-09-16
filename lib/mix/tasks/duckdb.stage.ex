@@ -89,6 +89,7 @@ defmodule Mix.Tasks.Duckdb.Stage do
     duckdb_driver(dir, target)
     support_libs(dir, target)
     adbc_natives(dir, target)
+    rename_support_libs(dir, target)
     set_rpaths(dir)
 
     Mix.shell().info("staged #{name}")
@@ -183,6 +184,42 @@ defmodule Mix.Tasks.Duckdb.Stage do
     File.cp!(manager, Path.join(dir, "libadbc_driver_manager.so.110"))
   end
 
+  # Bundled `libstdc++.so.6` and `libgcc_s.so.1` get unique names, and every DT_NEEDED
+  # referring to them is rewritten to match.
+  #
+  # This is the part that actually makes them win, and the reason is a musl/glibc
+  # difference worth knowing: **musl searches `LD_LIBRARY_PATH` before rpath**, where glibc
+  # searches DT_RPATH first. So on musl no rpath tagging can out-rank a build or run host
+  # that exports an `LD_LIBRARY_PATH` covering its own glibc `libstdc++.so.6` — the process
+  # loads that one and dies relocating it (`arc4random: symbol not found`). GitHub's
+  # runners do exactly this, which is why the first CI run failed against artifacts that
+  # worked on a developer machine.
+  #
+  # A name nothing else on any system publishes cannot be shadowed: the `LD_LIBRARY_PATH`
+  # sweep misses, and the search falls through to our `$ORIGIN`.
+  @renames %{
+    "libstdc++.so.6" => "libo11y_stdcxx.so.6",
+    "libgcc_s.so.1" => "libo11y_gcc_s.so.1"
+  }
+
+  defp rename_support_libs(dir, target) do
+    # Every ELF here that might name one of them: DuckDB needs both, and the bundled
+    # libstdc++ itself needs libgcc_s.
+    consumers = [
+      Path.join(dir, "#{target.runtime_triplet}-#{@duckdb_version}-libadbc_driver_duckdb.so")
+      | Enum.map(Map.keys(@renames), &Path.join(dir, &1))
+    ]
+
+    for file <- consumers, File.exists?(file), {from, to} <- @renames do
+      patchelf!(["--replace-needed", from, to, file])
+    end
+
+    for {from, to} <- @renames do
+      source = Path.join(dir, from)
+      File.exists?(source) && File.rename!(source, Path.join(dir, to))
+    end
+  end
+
   # The NIF sits at priv/ and everything else at priv/lib/, so they need different
   # origins. Burrito unpacks the payload somewhere the loader knows nothing about.
   defp set_rpaths(dir) do
@@ -192,11 +229,19 @@ defmodule Mix.Tasks.Duckdb.Stage do
     |> Enum.each(fn file ->
       rpath = if Path.basename(file) == "adbc_nif.so", do: "$ORIGIN/lib", else: "$ORIGIN"
 
-      case System.cmd("patchelf", ["--set-rpath", rpath, file], stderr_to_stdout: true) do
-        {_, 0} -> :ok
-        {out, code} -> Mix.raise("patchelf failed on #{file} (#{code})\n#{out}")
-      end
+      # DT_RPATH rather than patchelf's default DT_RUNPATH. This is not what makes the
+      # bundled libraries win — see `rename_support_libs/1` for that — but it is the right
+      # tag to write, and it matters if these are ever loaded by glibc, which does consult
+      # DT_RPATH ahead of LD_LIBRARY_PATH.
+      patchelf!(["--force-rpath", "--set-rpath", rpath, file])
     end)
+  end
+
+  defp patchelf!(args) do
+    case System.cmd("patchelf", args, stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      {out, code} -> Mix.raise("patchelf #{Enum.join(args, " ")} failed (#{code})\n#{out}")
+    end
   end
 
   defp download(url, name) do
