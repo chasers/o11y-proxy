@@ -203,8 +203,8 @@ tar xzf o11y_proxy-0.2.1-linux-x86_64.tar.gz
 ./bin/o11y_proxy stop
 ```
 
-The tarball is built for linux x86_64 only. The single-file binaries are cross-compiled for
-all four targets.
+Tarballs are published per platform (linux x86_64, linux aarch64, macOS silicon). The
+single-file binaries are cross-compiled for all four targets.
 
 <details>
 <summary><b>The CLI uses a running server if it finds one (optional reading)</b></summary>
@@ -311,8 +311,9 @@ If your records are nested rather than one-row-per-line — CloudWatch's are —
 names. [`examples/cloudwatch-s3/`](examples/cloudwatch-s3/) is a worked setup, log group to
 query.
 
-⚠️ **The `s3` backend does not work in the single-file binaries.** Use the release tarball
-or run from source; see [Building the binaries](#developing) below for why.
+⚠️ **The macOS single-file binaries carry no `s3` backend** — use the release tarball or run
+from source. The Linux binaries are fine; see [Building the binaries](#developing) for why
+the two differ.
 
 </details>
 
@@ -398,25 +399,28 @@ Binaries go to `burrito_out/`. The tarball goes to `_build/prod/`. You need Zig 
 `.tool-versions`) and `xz`. Windows targets need `7z` and are not built. To build only the
 tarball — no Zig needed — set `O11Y_PROXY_SKIP_BURRITO=1`.
 
-**The `s3` backend works in the tarball, not in the single-file binary.** Burrito's ERTS is
-musl-linked; the DuckDB NIF that `adbc` ships is glibc-linked and pulls in `libstdc++`, and
-a musl process cannot `dlopen` a glibc shared library. Building each target on a matching
-host does not help — it is a libc mismatch, not an architecture one. So:
+**The `s3` backend works everywhere except the macOS binaries.**
 
 | artifact | `s3` backend | notes |
 | --- | --- | --- |
-| `o11y_proxy_<target>` | ✗ | refuses an `s3` source at boot with a message saying this |
+| `o11y_proxy_linux_{x86_64,aarch64}` | ✓ | DuckDB cross-built against musl by `mix duckdb.stage` |
+| `o11y_proxy_macos_*` | ✗ | refuses an `s3` source at boot with a message saying this |
 | `o11y_proxy-<version>-<platform>.tar.gz` | ✓ | native per platform; also what you want under systemd |
 | source install | ✓ | |
 
-Intel macOS gets no published tarball — GitHub retired the `macos-13` runners and a tarball
-is native by construction. Build your own with `MIX_ENV=prod mix release`.
+Burrito's ERTS is musl-linked and the NIF `adbc` ships is glibc-linked, so a binary cannot
+load the stock one — `mix duckdb.stage` builds a musl one instead. It needs `cmake`, `zig`
+and `patchelf`, runs automatically in the release workflow, and its moduledoc explains the
+five pieces that have to line up. macOS would need a darwin-native build, which nothing
+here does.
 
-This is a build-pipeline gap, not a law of nature, and it is being closed: DuckDB publishes
-official musl builds of `libduckdb`, and `adbc` only cross-compiles a thin driver-manager
-shim (it honours `CMAKE_TOOLCHAIN_FILE`, and Burrito exposes `nif_env`/`nif_make_args` per
-target), so a musl NIF build would give the Linux binaries a working `s3` backend without
-anyone compiling DuckDB. The macOS binaries would still need a darwin-native NIF.
+```sh
+mix duckdb.stage                 # both Linux targets
+mix duckdb.stage linux_aarch64   # just one
+```
+
+Intel macOS gets no published tarball either — GitHub retired the `macos-13` runners and a
+tarball is native by construction. Build your own with `MIX_ENV=prod mix release`.
 
 **Two traps that will cost you an afternoon:**
 

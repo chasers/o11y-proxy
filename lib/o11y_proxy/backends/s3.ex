@@ -131,17 +131,16 @@ defmodule O11yProxy.Backends.S3 do
   rescue
     # Narrow on purpose: `adbc`'s NIF stubs call `:erlang.nif_error(:not_loaded)` when the
     # shared library could not be dlopen'd, and that is a *known, documented* state rather
-    # than a bug to hand back as a stacktrace. The single-file binaries are built on a
-    # musl-linked ERTS while adbc's precompiled NIF is glibc-linked, so DuckDB cannot load
-    # inside them; the OTP release tarball and a source install are fine. Anything else
-    # re-raises.
+    # than a bug to hand back as a stacktrace. It is what a single-file binary with no
+    # DuckDB staged into it looks like — the macOS ones, which would need a darwin-native
+    # build `mix duckdb.stage` does not do. Anything else re-raises.
     error in ErlangError ->
       if error.original == :not_loaded do
         {:error,
          {:duckdb_unavailable,
-          "DuckDB's native library could not be loaded. The `s3` backend does not work " <>
-            "in the single-file binary — use the OTP release tarball or run from source. " <>
-            "See README.md, \"Building the binaries\"."}}
+          "DuckDB's native library could not be loaded. This single-file binary carries " <>
+            "no DuckDB — use the OTP release tarball or run from source. See README.md, " <>
+            "\"Building the binaries\"."}}
       else
         reraise(error, __STACKTRACE__)
       end
