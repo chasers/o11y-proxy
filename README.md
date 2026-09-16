@@ -1,8 +1,8 @@
 # o11y-proxy
 
-**One way to query Sentry, ClickHouse, and VictoriaMetrics.** Ask for logs, metrics,
-traces, and errors in the same shape, and get answers back in the same shape. You do not
-need to learn three query languages.
+**One way to query Sentry, ClickHouse, VictoriaMetrics, and logs sitting in S3.** Ask for
+logs, metrics, traces, and errors in the same shape, and get answers back in the same
+shape. You do not need to learn four query languages.
 
 Built for AI agents debugging production, but it is a normal HTTP API and a normal CLI, so
 it works fine for people too.
@@ -273,21 +273,67 @@ curl localhost:4000/v1/sources   # {"sources":[]}
 ```
 
 <details>
-<summary><b>ClickHouse and VictoriaMetrics with docker-compose</b></summary>
+<summary><b>Logs in S3 (or GCS, or R2, or a directory)</b></summary>
+
+The `s3` backend runs an embedded DuckDB over object storage, so a bucket of gzipped JSON
+or Parquet answers `/v1/query` like anything else. `uri` takes any path DuckDB can read.
+
+```yaml
+sources:
+  - name: log_archive
+    backend: s3
+    signal: logs
+    uri: s3://acme-logs/cw/**/*.gz    # or gs://, r2://, https://, or ./some/dir
+    format: json                      # json | parquet | csv
+    region: us-east-1
+    # Omit access_key_id/secret_access_key and DuckDB uses the AWS credential chain
+    # (environment, shared config, instance/task role).
+    mapping:
+      timestamp: ts
+      severity: level
+      body: message
+      service: service
+      attributes: attrs
+    hints:
+      partition_key: ts
+      hive_date_column: dt            # read this
+      low_cardinality: [service]
+```
+
+**`hints.hive_date_column` is the one to get right.** Object storage bills per GET and per
+byte scanned, so a query that cannot prune partitions is not slow, it is expensive. Given
+it, the compiler bounds that column *inside the scan*, and a one-hour query opens one day's
+objects instead of the bucket. Check `meta.native_queries` — the `WHERE CAST("dt" AS DATE)
+BETWEEN` should be in the `scan` CTE.
+
+If your records are nested rather than one-row-per-line — CloudWatch's are — add a
+`transform`: a SELECT over the raw scan that flattens them into the columns `mapping`
+names. [`examples/cloudwatch-s3/`](examples/cloudwatch-s3/) is a worked setup, log group to
+query.
+
+⚠️ **The `s3` backend does not work in the single-file binaries.** Use the release tarball
+or run from source; see [Building the binaries](#developing) below for why.
+
+</details>
+
+<details>
+<summary><b>ClickHouse, VictoriaMetrics and MinIO with docker-compose</b></summary>
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
-./docker/seed.sh && ./docker/seed-vm.sh
+./docker/seed.sh && ./docker/seed-vm.sh && ./docker/seed-s3.sh
 O11Y_PROXY_CONFIG=docker/o11y.yaml o11y-proxy serve
 ```
 
-All three adapters have been verified against real backends: ClickHouse 24.8,
-VictoriaMetrics v1.102.0, and a live Sentry org, with the full test suite passing against
-all three at once.
+ClickHouse, VictoriaMetrics and Sentry have been verified against real backends:
+ClickHouse 24.8, VictoriaMetrics v1.102.0, and a live Sentry org, with the full test suite
+passing against all three at once.
 
-One caveat: the `docker/` compose file itself has not been run. The verification used the
-same two servers as standalone binaries, because this dev sandbox has no container runtime.
-`seed.sh` and `seed-vm.sh` did run unchanged against them.
+Two caveats. The `docker/` compose file itself has not been run — the verification used the
+same servers as standalone binaries, because this dev sandbox has no container runtime, and
+`seed.sh`/`seed-vm.sh` did run unchanged against them. The MinIO service and `seed-s3.sh`
+are new and in the same position. The `s3` adapter itself *is* covered by tests that run on
+every CI build, against the Parquet fixture in `test/fixtures/s3/`.
 
 </details>
 
@@ -295,7 +341,7 @@ same two servers as standalone binaries, because this dev sandbox has no contain
 
 ## Status
 
-**Working:** all three adapters, `/v1/query` (one source per call), `/v1/context` (fans out
+**Working:** all four adapters, `/v1/query` (one source per call), `/v1/context` (fans out
 to every source), circuit breakers, secret redaction, response size limits, and cursor
 pagination.
 
@@ -329,7 +375,13 @@ Backend tests are opt-in, because they need live services:
 ```bash
 mix test --include sentry
 mix test --include clickhouse --include victoriametrics
+mix test --include s3_minio    # needs docker compose up + ./docker/seed-s3.sh
 ```
+
+The `s3` adapter is the exception: its contract suite runs on every `mix test`, against the
+Parquet fixture in `test/fixtures/s3/`. DuckDB is embedded and Parquet is statically linked
+into it, so there is nothing to stand up. `s3_minio` covers the rest — `httpfs`, secrets,
+gzipped JSON.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow and
 [`AGENTS.md`](AGENTS.md) for the architecture and conventions.
@@ -343,7 +395,22 @@ BURRITO_TARGET=linux_aarch64 MIX_ENV=prod mix release --overwrite   # just one
 ```
 
 Binaries go to `burrito_out/`. The tarball goes to `_build/prod/`. You need Zig (pinned in
-`.tool-versions`) and `xz`. Windows targets need `7z` and are not built.
+`.tool-versions`) and `xz`. Windows targets need `7z` and are not built. To build only the
+tarball — no Zig needed — set `O11Y_PROXY_SKIP_BURRITO=1`.
+
+**The `s3` backend works in the tarball, not in the single-file binary.** Burrito's ERTS is
+musl-linked; the DuckDB NIF that `adbc` ships is glibc-linked and pulls in `libstdc++`, and
+a musl process cannot `dlopen` a glibc shared library. Building each target on a matching
+host does not help — it is a libc mismatch, not an architecture one. So:
+
+| artifact | `s3` backend | notes |
+| --- | --- | --- |
+| `o11y_proxy_<target>` | ✗ | refuses an `s3` source at boot with a message saying this |
+| `o11y_proxy-<version>-<platform>.tar.gz` | ✓ | native per platform; also what you want under systemd |
+| source install | ✓ | |
+
+Intel macOS gets no published tarball — GitHub retired the `macos-13` runners and a tarball
+is native by construction. Build your own with `MIX_ENV=prod mix release`.
 
 **Two traps that will cost you an afternoon:**
 
@@ -490,6 +557,62 @@ POST /v1/query
   "from": "now-1h", "to": "now"
 }
 ```
+
+</details>
+
+<details>
+<summary><b>S3 — CloudWatch logs archived to a bucket</b></summary>
+
+The source is the one in [`examples/cloudwatch-s3/o11y.yaml`](examples/cloudwatch-s3/o11y.yaml):
+gzipped Firehose records under `cw/dt=…/hour=…/`, flattened by a `transform`.
+
+```json
+POST /v1/query
+{
+  "sources": ["cw_logs"],
+  "signal": "logs",
+  "from": "now-6h", "to": "now",
+  "filters": [
+    {"field": "service", "op": "eq", "value": "/aws/lambda/checkout-api"},
+    {"field": "body", "op": "contains", "value": "connection refused"}
+  ],
+  "mode": "full",
+  "limit": 20
+}
+```
+
+What actually runs:
+
+```sql
+WITH scan AS (
+  SELECT * FROM read_json('s3://acme-logs-archive/cw/**/*.gz',
+                          format = 'newline_delimited',
+                          hive_partitioning = true,
+                          union_by_name = true)
+  WHERE CAST("dt" AS DATE) BETWEEN ? AND ?
+),
+src AS (
+  SELECT to_timestamp(e.timestamp / 1000) AS ts, logGroup AS service, e.message AS message,
+         CASE WHEN regexp_matches(e.message, '(?i)\b(error|exception)\b') THEN 'error'
+              ELSE 'info' END AS level,
+         map {'log_stream': logStream, 'event_id': e.id, 'account': owner} AS attrs
+  FROM scan, UNNEST(logEvents) AS u(e)
+  WHERE messageType = 'DATA_MESSAGE'
+)
+SELECT "ts" AS timestamp, "level" AS severity, "message" AS body, "service" AS service,
+       CAST(NULL AS VARCHAR) AS trace_id, CAST(NULL AS VARCHAR) AS span_id,
+       "attrs" AS attributes
+FROM src
+WHERE "ts" BETWEEN ? AND ? AND "service" = ? AND contains(CAST("message" AS VARCHAR), ?)
+ORDER BY "ts" DESC LIMIT 20
+```
+
+Two bounds, doing different jobs. The one in the `scan` CTE picks which **objects** to
+open — that is the S3 bill. The one in the outer `WHERE` picks which **rows** to return,
+because partitions are only day-granular and "the last six hours" is not "today".
+
+Every `?` is a bound parameter. Filter values are never spliced into the SQL text, the same
+guarantee the ClickHouse adapter gives.
 
 </details>
 

@@ -9,6 +9,7 @@ defmodule O11yProxy.Backends.ClickHouse.SQL do
   """
 
   alias O11yProxy.Query
+  alias O11yProxy.SQLGuard
 
   @write_keywords ~w(INSERT DELETE UPDATE ALTER DROP TRUNCATE CREATE GRANT REVOKE
                       ATTACH DETACH RENAME EXCHANGE SYSTEM KILL OPTIMIZE SET WATCH
@@ -207,37 +208,12 @@ defmodule O11yProxy.Backends.ClickHouse.SQL do
   Guardrail for the `raw` escape hatch: only a single `SELECT` (optionally with a leading
   `WITH`/CTE) is allowed. Defense in depth — the real boundary is the read-only ClickHouse
   user — but a client typo or a prompt-injected write statement should fail here first.
+
+  The check lives in `O11yProxy.SQLGuard`, shared with the S3/DuckDB adapter, which needs
+  the same rule against a different dialect's write verbs. `@write_keywords` above is the
+  ClickHouse half.
   """
   @spec validate_single_select(String.t()) :: :ok | {:error, {:invalid_raw_query, String.t()}}
-  def validate_single_select(sql) when is_binary(sql) do
-    trimmed = String.trim(sql)
-    upcased = String.upcase(trimmed)
-
-    cond do
-      trimmed == "" ->
-        {:error, {:invalid_raw_query, "empty query"}}
-
-      not (String.starts_with?(upcased, "SELECT") or String.starts_with?(upcased, "WITH")) ->
-        {:error,
-         {:invalid_raw_query,
-          "only a single SELECT (optionally with a WITH/CTE prefix) is allowed"}}
-
-      has_multiple_statements?(trimmed) ->
-        {:error, {:invalid_raw_query, "only a single statement is allowed"}}
-
-      contains_write_keyword?(upcased) ->
-        {:error, {:invalid_raw_query, "write/DDL keywords are not allowed in a raw query"}}
-
-      true ->
-        :ok
-    end
-  end
-
-  defp has_multiple_statements?(sql) do
-    sql |> String.trim_trailing() |> String.trim_trailing(";") |> String.contains?(";")
-  end
-
-  defp contains_write_keyword?(upcased) do
-    Enum.any?(@write_keywords, &Regex.match?(~r/\b#{&1}\b/, upcased))
-  end
+  def validate_single_select(sql) when is_binary(sql),
+    do: SQLGuard.validate_single_select(sql, @write_keywords)
 end

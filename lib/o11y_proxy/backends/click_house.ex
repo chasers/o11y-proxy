@@ -18,6 +18,7 @@ defmodule O11yProxy.Backends.ClickHouse do
 
   @behaviour O11yProxy.Backend
 
+  alias O11yProxy.Backend
   alias O11yProxy.Backends.ClickHouse.SQL
   alias O11yProxy.Record
 
@@ -115,28 +116,18 @@ defmodule O11yProxy.Backends.ClickHouse do
         native_types = Map.new(rows, fn [name, type] -> {name, type} end)
 
         fields =
-          for {canonical, native} <- state.mapping do
-            %{
-              canonical: canonical,
-              native: native,
-              type: Map.get(native_types, native, "unknown"),
-              filterable: true,
-              cardinality: if(native in state.low_cardinality, do: "low", else: "unknown"),
-              sample_values: sample_values(state, native)
-            }
-          end
+          Backend.schema_fields(
+            state.mapping,
+            native_types,
+            state.low_cardinality,
+            &distinct_values(state, &1)
+          )
 
         {:ok, %{name: state.table, fields: fields}}
 
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  defp sample_values(state, native) do
-    if native in state.low_cardinality,
-      do: distinct_values(state, native),
-      else: []
   end
 
   defp distinct_values(state, native) do
@@ -268,8 +259,8 @@ defmodule O11yProxy.Backends.ClickHouse do
   defp rows_to_output(:summary, _columns, rows) do
     Enum.map(rows, fn [bucket, severity, service, count] ->
       %{
-        bucket: format_ts(bucket),
-        severity: normalize_severity(severity),
+        bucket: Record.format_timestamp(bucket),
+        severity: Record.normalize_severity(severity),
         service: service,
         count: count
       }
@@ -279,8 +270,8 @@ defmodule O11yProxy.Backends.ClickHouse do
   defp rows_to_output(:records, _columns, rows) do
     Enum.map(rows, fn [ts, severity, body, service, trace_id, span_id, attributes] ->
       %Record{
-        timestamp: format_ts(ts),
-        severity: normalize_severity(severity),
+        timestamp: Record.format_timestamp(ts),
+        severity: Record.normalize_severity(severity),
         body: body,
         service: service,
         trace_id: nil_if_empty(trace_id),
@@ -295,42 +286,6 @@ defmodule O11yProxy.Backends.ClickHouse do
     Enum.map(rows, fn row -> columns |> Enum.zip(row) |> Map.new() end)
   end
 
-  defp format_ts(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp format_ts(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt) <> "Z"
-  defp format_ts(other), do: to_string(other)
-
   defp nil_if_empty(""), do: nil
   defp nil_if_empty(other), do: other
-
-  # OTel SeverityText is free-form; SeverityNumber follows the OTel spec's 1-24 range.
-  # Unknown/missing values normalize to :info rather than raising — a malformed severity
-  # column must never turn into a 500 on an otherwise-good log line.
-  @severity_names %{
-    "trace" => :trace,
-    "debug" => :debug,
-    "info" => :info,
-    "information" => :info,
-    "warn" => :warn,
-    "warning" => :warn,
-    "error" => :error,
-    "fatal" => :fatal,
-    "critical" => :fatal
-  }
-
-  defp normalize_severity(sev) when is_binary(sev),
-    do: Map.get(@severity_names, String.downcase(sev), :info)
-
-  defp normalize_severity(sev) when is_integer(sev) do
-    cond do
-      sev in 1..4 -> :trace
-      sev in 5..8 -> :debug
-      sev in 9..12 -> :info
-      sev in 13..16 -> :warn
-      sev in 17..20 -> :error
-      sev in 21..24 -> :fatal
-      true -> :info
-    end
-  end
-
-  defp normalize_severity(_), do: :info
 end

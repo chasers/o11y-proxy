@@ -1,0 +1,67 @@
+# A source over CloudWatch Logs archived to S3 by Amazon Data Firehose. See README.md in
+# this directory for the AWS side.
+#
+# Safe to commit: secrets are only ever ${ENV_VAR} references, never literals. Omitting
+# the three credential keys entirely — as this file does — makes DuckDB use the AWS
+# credential chain (environment, shared config, instance/task role), which is what you
+# want on EC2, ECS or EKS.
+
+server:
+  port: 4000
+  auth: none
+
+defaults:
+  limit: 50
+  max_window: 30d # archives are the reason to ask for a wider window than the hot store
+  timeout: 60s
+  max_bytes: 64000
+
+sources:
+  - name: cw_logs
+    backend: s3
+    signal: logs
+
+    uri: s3://acme-logs-archive/cw/**/*.gz
+    format: json
+    region: us-east-1
+    hive_partitioning: true
+
+    # Firehose nests the events in a `logEvents` array, so the raw objects are not a log
+    # table. This SELECT runs over the raw scan (exposed as `scan`) and produces the flat
+    # columns `mapping` names below. UNNEST turns one record into one row per event.
+    transform: |
+      SELECT
+        to_timestamp(e.timestamp / 1000)  AS ts,
+        logGroup                          AS service,
+        e.message                         AS message,
+        CASE
+          WHEN regexp_matches(e.message, '(?i)\b(fatal|panic)\b')     THEN 'fatal'
+          WHEN regexp_matches(e.message, '(?i)\b(error|exception)\b') THEN 'error'
+          WHEN regexp_matches(e.message, '(?i)\bwarn')                THEN 'warn'
+          WHEN regexp_matches(e.message, '(?i)\bdebug\b')             THEN 'debug'
+          ELSE 'info'
+        END AS level,
+        map {'log_stream': logStream, 'event_id': e.id, 'account': owner} AS attrs
+      FROM scan, UNNEST(logEvents) AS u(e)
+      WHERE messageType = 'DATA_MESSAGE'
+
+    mapping:
+      timestamp: ts
+      severity: level
+      body: message
+      service: service
+      attributes: attrs
+
+    hints:
+      # The row-level timestamp. Bounded on every query, in every mode.
+      partition_key: ts
+      # The Hive partition column, bounded *inside the scan* so DuckDB opens only the
+      # objects the window touches. Leaving this out is the difference between reading one
+      # hour of the bucket and reading all of it — on S3 that is a bill, not a pause.
+      hive_date_column: dt
+      low_cardinality: [service]
+
+    # Off by default. `raw` lets a caller send DuckDB SQL directly; it is validated as a
+    # single SELECT and the session blocks local file access, but it still means arbitrary
+    # scans of the bucket at your expense.
+    allow_raw: false

@@ -18,7 +18,7 @@ defaults:
   # matches a key's last segment, so `http.request.header.authorization` is covered.
   redact_keys: []
 
-# No sources configured — ClickHouse, VictoriaMetrics, and Sentry adapters all exist
+# No sources configured — ClickHouse, VictoriaMetrics, Sentry, and S3 adapters all exist
 # now; this file just doesn't point at any real instances. A source block looks like
 # this:
 #
@@ -57,4 +57,27 @@ defaults:
 #     signal: metrics
 #     url: ${VM_URL}
 #     allow_raw: true
+#
+#   # Logs that aged out of the hot store, queried in place with DuckDB. `uri` takes any
+#   # path DuckDB can read — s3://, gs://, r2://, https://, or a local directory — and
+#   # `format` is json, parquet or csv. Omitting the credential keys uses the AWS
+#   # credential chain. `hints.hive_date_column` is what makes a time-bounded query open
+#   # one day's objects instead of the whole bucket; see examples/cloudwatch-s3/ for a
+#   # worked setup with a `transform` for nested records.
+#   - name: log_archive
+#     backend: s3
+#     signal: logs
+#     uri: ${LOG_ARCHIVE_URI}      # e.g. s3://acme-logs/cw/**/*.gz
+#     format: json
+#     region: us-east-1
+#     mapping:
+#       timestamp: ts
+#       severity: level
+#       body: message
+#       service: service
+#       attributes: attrs
+#     hints:
+#       partition_key: ts
+#       hive_date_column: dt
+#       low_cardinality: [service]
 sources: []

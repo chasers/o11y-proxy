@@ -77,4 +77,36 @@ defmodule O11yProxy.Backend do
               {:ok, O11yProxy.Record.t()} | {:error, term()}
 
   @optional_callbacks schema: 1, health: 1, fetch_by_id: 2
+
+  @doc """
+  Builds the `fields` list `schema/1` returns, given a source's `mapping` and whatever the
+  adapter managed to learn about the underlying columns.
+
+  Shared rather than copied because the shape is the API's, not any adapter's — it is the
+  `SourceSchema` component in `priv/static/openapi.json`, and two hand-rolled copies drift.
+  `sample_values` is only called for a column the source declared low-cardinality, so an
+  adapter can hand over an unguarded "SELECT DISTINCT" without also re-implementing the
+  guard.
+  """
+  @spec schema_fields(
+          mapping :: %{optional(String.t()) => String.t()},
+          native_types :: %{optional(String.t()) => String.t()},
+          low_cardinality :: [String.t()],
+          sample_values :: (String.t() -> [term()])
+        ) :: [map()]
+  def schema_fields(mapping, native_types, low_cardinality, sample_values)
+      when is_function(sample_values, 1) do
+    for {canonical, native} <- mapping do
+      low? = native in low_cardinality
+
+      %{
+        canonical: canonical,
+        native: native,
+        type: Map.get(native_types, native, "unknown"),
+        filterable: true,
+        cardinality: if(low?, do: "low", else: "unknown"),
+        sample_values: if(low?, do: sample_values.(native), else: [])
+      }
+    end
+  end
 end

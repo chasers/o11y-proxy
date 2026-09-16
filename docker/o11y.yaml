@@ -1,6 +1,11 @@
-# Real, runnable example config against the docker-compose ClickHouse (see
-# docker-compose.yml + seed.sh). Point at it with:
+# Real, runnable example config against the docker-compose services (see
+# docker-compose.yml + seed.sh + seed-vm.sh + seed-s3.sh). Point at it with:
 #   O11Y_PROXY_CONFIG=docker/o11y.yaml mix run --no-halt
+#
+# All of it has to come up: one source failing to initialize stops the boot, by design.
+# The `archive` source at the bottom is the exception worth knowing about — it reads the
+# Parquet fixture in test/fixtures/s3 and needs nothing running, so deleting the other
+# four leaves a config that works with docker stopped.
 
 server:
   port: 4000
@@ -62,3 +67,65 @@ sources:
     signal: metrics
     url: http://localhost:8428
     allow_raw: true
+
+  # MinIO standing in for S3 (see docker-compose.yml + seed-s3.sh). Same adapter as a real
+  # bucket would use; only `endpoint`/`url_style`/`use_ssl` differ. The `transform` is the
+  # CloudWatch-via-Firehose shape — see examples/cloudwatch-s3/.
+  - name: cw_logs
+    backend: s3
+    signal: logs
+    uri: s3://o11y-logs/cw/**/*.gz
+    format: json
+    region: us-east-1
+    access_key_id: o11yproxy
+    secret_access_key: o11yproxy
+    endpoint: localhost:9010
+    url_style: path
+    use_ssl: false
+    allow_raw: true
+    transform: |
+      SELECT
+        to_timestamp(e.timestamp / 1000)  AS ts,
+        logGroup                          AS service,
+        e.message                         AS message,
+        CASE
+          WHEN regexp_matches(e.message, '(?i)\b(fatal|panic)\b')     THEN 'fatal'
+          WHEN regexp_matches(e.message, '(?i)\b(error|exception)\b') THEN 'error'
+          WHEN regexp_matches(e.message, '(?i)\bwarn')                THEN 'warn'
+          WHEN regexp_matches(e.message, '(?i)\bdebug\b')             THEN 'debug'
+          ELSE 'info'
+        END AS level,
+        map {'log_stream': logStream, 'event_id': e.id, 'account': owner} AS attrs
+      FROM scan, UNNEST(logEvents) AS u(e)
+      WHERE messageType = 'DATA_MESSAGE'
+    mapping:
+      timestamp: ts
+      severity: level
+      body: message
+      service: service
+      attributes: attrs
+    hints:
+      partition_key: ts
+      hive_date_column: dt
+      low_cardinality: [service]
+
+  # The same adapter with no bucket in sight: a local directory of Parquet, which is what
+  # test/fixtures/s3 is and what the S3 BackendCase suite runs against. Any DuckDB-readable
+  # path works here — gs://, r2://, https://, or this.
+  - name: archive
+    backend: s3
+    signal: logs
+    uri: test/fixtures/s3/logs/**/*.parquet
+    format: parquet
+    mapping:
+      timestamp: ts
+      severity: level
+      body: message
+      service: service
+      trace_id: trace_id
+      span_id: span_id
+      attributes: attrs
+    hints:
+      partition_key: ts
+      hive_date_column: dt
+      low_cardinality: [service]
