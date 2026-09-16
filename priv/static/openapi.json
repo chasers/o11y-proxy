@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "o11y-proxy",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "One HTTP+JSON interface over Sentry, ClickHouse, VictoriaMetrics, and object storage queried with DuckDB for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies."
   },
   "servers": [
