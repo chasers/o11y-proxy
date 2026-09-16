@@ -139,8 +139,9 @@ defmodule O11yProxy.Backends.S3 do
         {:error,
          {:duckdb_unavailable,
           "DuckDB's native library could not be loaded. This single-file binary carries " <>
-            "no DuckDB — use the OTP release tarball or run from source. See README.md, " <>
-            "\"Building the binaries\"."}}
+            "no DuckDB — that is the macOS builds. Run from source, or run the macOS " <>
+            "release tarball as a daemon and use HTTP (the tarball has no one-shot CLI). " <>
+            "See README.md, \"Building the binaries\"."}}
       else
         reraise(error, __STACKTRACE__)
       end
