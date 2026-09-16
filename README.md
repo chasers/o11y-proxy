@@ -197,7 +197,7 @@ For a real service, use the release tarball instead of the binary. It has the st
 start scripts:
 
 ```bash
-tar xzf o11y_proxy-0.3.0-linux-x86_64.tar.gz
+tar xzf o11y_proxy-0.4.0-linux-x86_64.tar.gz
 ./bin/o11y_proxy daemon      # or: start, start_iex
 ./bin/o11y_proxy rpc 'O11yProxy.Sources.list()'
 ./bin/o11y_proxy stop
