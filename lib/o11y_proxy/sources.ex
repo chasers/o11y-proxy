@@ -62,9 +62,46 @@ defmodule O11yProxy.Sources do
     end
   end
 
-  @doc "Per-source reachability — the `/healthz` payload."
-  @spec healthz() :: %{sources: %{optional(String.t()) => map()}}
-  def healthz do
+  @doc """
+  Per-source reachability — the `/healthz` payload.
+
+  `opts`:
+    * `:max_age_ms` — reuse a result at most this old instead of checking every backend
+      again. `/healthz` is open when auth is on, so without this anyone who can reach the
+      port could make the proxy hit every backend as fast as they can send requests.
+    * `:status_only` — drop each source's `message`, which is `inspect/1` of the
+      backend's error and can carry hostnames and URLs. For callers who sent no token.
+  """
+  @spec healthz(keyword()) :: %{sources: %{optional(String.t()) => map()}}
+  def healthz(opts \\ []) do
+    result =
+      case Keyword.get(opts, :max_age_ms) do
+        nil -> live_healthz()
+        max_age_ms -> cached_healthz(max_age_ms)
+      end
+
+    if Keyword.get(opts, :status_only, false), do: status_only(result), else: result
+  end
+
+  defp cached_healthz(max_age_ms) do
+    now = System.monotonic_time(:millisecond)
+
+    case StateTable.cached_health() do
+      {:ok, taken_at, result} when now - taken_at <= max_age_ms ->
+        result
+
+      _stale_or_missing ->
+        result = live_healthz()
+        StateTable.put_health(now, result)
+        result
+    end
+  end
+
+  defp status_only(%{sources: sources}) do
+    %{sources: Map.new(sources, fn {name, status} -> {name, Map.take(status, [:status])} end)}
+  end
+
+  defp live_healthz do
     statuses =
       StateTable.all()
       |> Map.new(fn {name, %{backend: backend, state: state}} ->

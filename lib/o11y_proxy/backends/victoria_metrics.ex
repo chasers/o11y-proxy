@@ -15,7 +15,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
 
   alias O11yProxy.Backends.VictoriaMetrics.PromQL
 
-  @operators [:eq, :neq, :regex]
+  @operators [:eq, :neq, :regex, :in]
 
   @impl true
   def config_schema do

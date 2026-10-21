@@ -61,7 +61,8 @@ defmodule O11yProxy.Query do
          {:ok, mode} <- fetch_enum(params, "mode", @modes, :summary),
          {:ok, order} <- fetch_enum(params, "order", @orders, :desc),
          {:ok, limit} <- fetch_limit(params, default_limit),
-         {:ok, filters} <- parse_filters(Map.get(params, "filters", [])) do
+         {:ok, filters} <- parse_filters(Map.get(params, "filters", [])),
+         {:ok, raw} <- fetch_raw(params) do
       {:ok,
        %__MODULE__{
          sources: normalize_sources(Map.get(params, "sources")),
@@ -69,7 +70,7 @@ defmodule O11yProxy.Query do
          from: from,
          to: to,
          filters: filters,
-         raw: Map.get(params, "raw"),
+         raw: raw,
          mode: mode,
          limit: limit,
          order: order,
@@ -137,4 +138,13 @@ defmodule O11yProxy.Query do
   end
 
   defp parse_filters(other), do: {:error, {:invalid_filters, other}}
+
+  # Adapters branch on `if query.raw`, so anything truthy would run as a raw query. Only a
+  # string is a native query; refusing the rest here keeps that true for every adapter.
+  defp fetch_raw(params) do
+    case Map.get(params, "raw") do
+      raw when is_nil(raw) or is_binary(raw) -> {:ok, raw}
+      other -> {:error, {:invalid_raw, "raw must be a string, got #{inspect(other)}"}}
+    end
+  end
 end

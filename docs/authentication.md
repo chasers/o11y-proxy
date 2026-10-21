@@ -195,6 +195,8 @@ How `allowed_claim` reads the token:
 - A missing claim means no values are allowed.
 - A claim that is a map or nested list is refused with `403`.
 - Values are compared as strings. `42` matches `"42"`.
+- Injected values are sent as strings too.
+- A filter value on a constrained field must be a string, number or boolean. Maps and nested lists get `403`.
 
 `require` or `inject`?
 
@@ -450,6 +452,7 @@ It names the field, the operator, the values or the cap to change.
 - Other sources still answer. The status is still `200`.
 - Its own default lookback shrinks to fit `max_lookback`.
 - Its own default limit shrinks to fit `max_limit`.
+- Its own mode falls back to one the policy allows. `summary` is the last choice.
 - A window you give it yourself is checked as given.
 - An `error_id` lookup is refused on a constrained source. An ID cannot be scoped by a filter.
 
@@ -458,6 +461,9 @@ Tip: prefer `inject` over `require` for sources an agent will reach through `/v1
 ## Things to know
 
 - **`/healthz` is open.** It lists every source name and its status. No data.
+- **With auth on, `/healthz` is cached.** It checks the backends at most once every 5 seconds.
+- **With auth on, `/healthz` shows only `status`.** Error messages are dropped, since they can name hosts.
+- **Bodies are read after auth.** A request with no valid token is refused before its JSON is parsed.
 - **`/metrics` is not open.** It needs a token like the data routes.
 - **The CLI is not limited.** It runs as the local user, or through the daemon's Erlang cookie.
 - **One role per token.** Two matching roles is a `403`.

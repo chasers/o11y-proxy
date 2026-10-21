@@ -16,6 +16,7 @@ defmodule O11yProxy.RouterOIDCTest do
 
   alias O11yProxy.Policy
   alias O11yProxy.Policy.Constraint
+  alias O11yProxy.Sources.StateTable
   alias O11yProxy.Test.OIDC
 
   @opts O11yProxy.Router.init([])
@@ -74,6 +75,7 @@ defmodule O11yProxy.RouterOIDCTest do
         max_lookback_seconds: 3600,
         max_limit: 5
       },
+      "summary_only" => %Policy{name: "summary_only", sources: [logs], modes: [:summary]},
       "sre" => %Policy{name: "sre", sources: :all, raw: :allow}
     }
 
@@ -123,6 +125,34 @@ defmodule O11yProxy.RouterOIDCTest do
     assert {401, _} = request(:get, "/v1/sources", nil)
     assert {200, _} = request(:get, "/healthz", nil)
     assert {200, %{"openapi" => _}} = request(:get, "/openapi.json", nil)
+  end
+
+  test "a request with no token is refused before its body is parsed" do
+    conn =
+      conn(:post, "/v1/query", "{this is not json")
+      |> put_req_header("content-type", "application/json")
+      |> O11yProxy.Router.call(@opts)
+
+    assert conn.status == 401
+  end
+
+  test "/healthz under auth is cached and drops error text" do
+    StateTable.put_health(System.monotonic_time(:millisecond), %{
+      sources: %{"cached_only" => %{status: "error", message: "db.internal:9000 refused"}}
+    })
+
+    assert {200, %{"sources" => %{"cached_only" => status}}} = request(:get, "/healthz", nil)
+    assert status == %{"status" => "error"}
+  end
+
+  test "/healthz under auth checks the backends again once the cache is stale", %{logs: logs} do
+    StateTable.put_health(System.monotonic_time(:millisecond) - 60_000, %{
+      sources: %{"stale_only" => %{status: "error", message: "old"}}
+    })
+
+    assert {200, %{"sources" => sources}} = request(:get, "/healthz", nil)
+    refute Map.has_key?(sources, "stale_only")
+    assert sources[logs] == %{"status" => "ok"}
   end
 
   test "a token for another audience is a 401", %{key: key, logs: logs} do
@@ -250,6 +280,14 @@ defmodule O11yProxy.RouterOIDCTest do
 
       {200, %{"errors" => [%{"source" => ^logs, "code" => "forbidden"}]}} =
         request(:post, "/v1/context", token(key, "short"), body)
+    end
+
+    test "context falls back to a mode the policy allows instead of being refused",
+         %{key: key, logs: logs} do
+      {200, %{"errors" => [], "meta" => meta}} =
+        request(:post, "/v1/context", token(key, "summary_only"), %{"trace_id" => "abc123"})
+
+      assert meta["sources_queried"] == [logs]
     end
 
     test "an injected constraint lets context query the source", %{key: key, logs: logs} do

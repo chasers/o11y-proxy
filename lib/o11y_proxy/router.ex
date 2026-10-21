@@ -21,17 +21,28 @@ defmodule O11yProxy.Router do
   plug(Plug.Telemetry, event_prefix: [:o11y_proxy, :http])
   plug(:match)
 
+  # Before the parser, so a request with no valid token is refused before its body is read.
+  # Otherwise anyone who can reach the port can make the server read and decode a large
+  # JSON body just to be told 401.
+  plug(O11yProxy.Plugs.Auth)
+
   plug(Plug.Parsers,
     parsers: [:json],
     json_decoder: Jason,
     pass: ["application/json"]
   )
 
-  plug(O11yProxy.Plugs.Auth)
   plug(:dispatch)
 
+  # Open in every mode. With auth on, it answers without credentials, so it gets the
+  # cached, status-only form rather than a live check of every backend per request.
   get "/healthz" do
-    respond(conn, Remote.handle(%{"command" => "health", "request" => %{}}))
+    request =
+      if Application.get_env(:o11y_proxy, :auth, :none) == :none,
+        do: %{},
+        else: %{"public" => true}
+
+    respond(conn, Remote.handle(%{"command" => "health", "request" => request}))
   end
 
   get "/v1/sources" do

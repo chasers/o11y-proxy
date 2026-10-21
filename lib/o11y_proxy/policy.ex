@@ -200,6 +200,15 @@ defmodule O11yProxy.Policy do
   def lookback_cap(nil), do: nil
   def lookback_cap(%__MODULE__{max_lookback_seconds: seconds}), do: seconds
 
+  @doc """
+  The first of `preferences` this policy allows, or `nil` when it allows none of them.
+  For a caller that did not choose a mode itself, so the one picked stays in bounds.
+  """
+  @spec mode_for(t() | nil, [atom()]) :: atom() | nil
+  def mode_for(nil, [preferred | _]), do: preferred
+  def mode_for(%__MODULE__{modes: :all}, [preferred | _]), do: preferred
+  def mode_for(%__MODULE__{modes: modes}, preferences), do: Enum.find(preferences, &(&1 in modes))
+
   @doc "The largest `limit` this policy accepts, or `nil` for no cap."
   @spec limit_cap(t() | nil) :: pos_integer() | nil
   def limit_cap(nil), do: nil
@@ -208,8 +217,10 @@ defmodule O11yProxy.Policy do
   # -- query-level checks ---------------------------------------------------------------
 
   # The raw escape hatch bypasses the canonical filters, and with them every constraint,
-  # which is also why config refuses `raw: allow` on a policy that has any.
-  defp check_raw(%{raw: :deny} = policy, %Query{raw: raw}) when is_binary(raw) do
+  # which is also why config refuses `raw: allow` on a policy that has any. Any non-nil
+  # value is refused, not only a string: adapters branch on `if query.raw`, so `true` or
+  # a number would otherwise run as a raw query.
+  defp check_raw(%{raw: :deny} = policy, %Query{raw: raw}) when not is_nil(raw) do
     {:error,
      {:forbidden,
       "policy #{inspect(policy.name)} does not allow raw queries; express the query " <>
@@ -292,8 +303,11 @@ defmodule O11yProxy.Policy do
 
   defp when_absent(%Constraint{inject: true, allowed: allowed} = constraint, _source, query)
        when is_list(allowed) do
+    # Injected as strings, because that is how they were checked: the allow-list compares
+    # with `to_string/1`. An integer claim sent as-is would also bind as a numeric
+    # parameter, which a string column such as an attribute map refuses to compare with.
     filter =
-      case allowed do
+      case Enum.map(allowed, &to_string/1) do
         [single] -> %Filter{field: constraint.field, op: :eq, value: single}
         many -> %Filter{field: constraint.field, op: :in, value: many}
       end
@@ -335,12 +349,27 @@ defmodule O11yProxy.Policy do
     {:error, {:forbidden, "a filter on #{constraint.field} with op in needs a list of values"}}
   end
 
-  defp check_filter(%Constraint{allowed: :any}, _filter), do: :ok
+  # Values are compared as strings below, and a map has no string form while a nested list
+  # flattens into one (`["p", "1"]` would read as "p1"). Either would make the check and
+  # the value the backend receives disagree, so only scalars are accepted.
+  defp check_filter(constraint, %Filter{op: :in, value: values}) do
+    if Enum.all?(values, &scalar?/1),
+      do: check_values(constraint, values),
+      else: non_scalar(constraint)
+  end
 
   defp check_filter(constraint, %Filter{value: value}) do
+    if scalar?(value),
+      do: check_values(constraint, [value]),
+      else: non_scalar(constraint)
+  end
+
+  defp check_values(%Constraint{allowed: :any}, _values), do: :ok
+
+  defp check_values(constraint, values) do
     permitted = MapSet.new(constraint.allowed, &to_string/1)
 
-    case Enum.reject(List.wrap(value), &MapSet.member?(permitted, to_string(&1))) do
+    case Enum.reject(values, &MapSet.member?(permitted, to_string(&1))) do
       [] ->
         :ok
 
@@ -352,6 +381,15 @@ defmodule O11yProxy.Policy do
             describe_allowed(constraint)}}
     end
   end
+
+  defp non_scalar(constraint) do
+    {:error,
+     {:forbidden,
+      "a filter on #{constraint.field} must use string, number or boolean values; " <>
+        describe_allowed(constraint)}}
+  end
+
+  defp scalar?(value), do: is_binary(value) or is_integer(value) or is_boolean(value)
 
   defp describe_allowed(%Constraint{allowed: :any}), do: "any value is allowed"
 

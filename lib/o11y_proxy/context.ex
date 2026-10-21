@@ -260,7 +260,7 @@ defmodule O11yProxy.Context do
       from: from,
       to: to,
       filters: [%Filter{field: "trace_id", op: :eq, value: trace_id}],
-      mode: :full,
+      mode: mode(opts, [:full, :sample, :summary]),
       limit: limit(opts)
     }
   end
@@ -275,7 +275,7 @@ defmodule O11yProxy.Context do
       from: from,
       to: to,
       filters: [%Filter{field: "labels.service", op: :eq, value: service}],
-      mode: :full,
+      mode: mode(opts, [:full, :sample, :summary]),
       limit: limit(opts)
     }
   end
@@ -287,7 +287,7 @@ defmodule O11yProxy.Context do
       from: from,
       to: to,
       filters: [%Filter{field: "service", op: :eq, value: service}],
-      mode: :sample,
+      mode: mode(opts, [:sample, :full, :summary]),
       limit: limit(opts)
     }
   end
@@ -507,6 +507,15 @@ defmodule O11yProxy.Context do
       cap ->
         earliest = DateTime.add(now, -cap, :second)
         if DateTime.compare(from, earliest) == :lt, do: earliest, else: from
+    end
+  end
+
+  # Like the window and limit, the mode is ours to choose, so it falls back to one the
+  # policy allows instead of having every source refused. `preferences` is best first.
+  defp mode(opts, [preferred | _] = preferences) do
+    case Policy.mode_for(caller_policy(opts), preferences) do
+      nil -> preferred
+      mode -> mode
     end
   end
 

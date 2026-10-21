@@ -40,6 +40,7 @@ defmodule O11yProxy.Remote do
   alias O11yProxy.{Caller, Context, Policy, Query, Response, ResponseError, Sources}
 
   @protocol_version 1
+  @public_health_max_age_ms 5_000
 
   @doc """
   The version of `handle/1`'s contract.
@@ -123,6 +124,11 @@ defmodule O11yProxy.Remote do
   end
 
   def handle(%{"command" => "sources"}, caller), do: {:ok, %{sources: Sources.list(caller)}}
+
+  # `"public"` is set by the HTTP router, never by a caller: it marks the open `/healthz`
+  # route under auth, which gets a short-lived cached, status-only answer.
+  def handle(%{"command" => "health", "request" => %{"public" => true}}, _caller),
+    do: {:ok, Sources.healthz(max_age_ms: @public_health_max_age_ms, status_only: true)}
 
   def handle(%{"command" => "health"}, _caller), do: {:ok, Sources.healthz()}
 

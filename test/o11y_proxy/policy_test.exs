@@ -76,6 +76,13 @@ defmodule O11yProxy.PolicyTest do
       assert {:ok, _} = Policy.authorize(policy(raw: :allow), "metrics", query(raw: "up"), @now)
     end
 
+    test "any non-nil raw is refused under raw: deny, not only a string" do
+      for raw <- [true, 123, %{"q" => "x"}] do
+        assert {:error, {:forbidden, _}} =
+                 Policy.authorize(policy(), "metrics", query(raw: raw), @now)
+      end
+    end
+
     test "modes outside the allowed list are refused" do
       p = policy(modes: [:summary, :sample])
       assert {:ok, _} = Policy.authorize(p, "metrics", query(mode: :sample), @now)
@@ -153,6 +160,19 @@ defmodule O11yProxy.PolicyTest do
       assert forbidden!(Policy.authorize(p, "metrics", q, @now)) =~ "needs a list"
     end
 
+    test "refuses a map value with a 403 instead of crashing", %{p: p} do
+      eq = with_filter(%Filter{field: "labels.project", op: :eq, value: %{"a" => 1}})
+      in_ = with_filter(%Filter{field: "labels.project", op: :in, value: [%{"a" => 1}]})
+
+      assert forbidden!(Policy.authorize(p, "metrics", eq, @now)) =~ "string, number or boolean"
+      assert forbidden!(Policy.authorize(p, "metrics", in_, @now)) =~ "string, number or boolean"
+    end
+
+    test "refuses a nested list, which would otherwise flatten into an allowed string", %{p: p} do
+      q = with_filter(%Filter{field: "labels.project", op: :in, value: [["p", "1"]]})
+      assert forbidden!(Policy.authorize(p, "metrics", q, @now)) =~ "string, number or boolean"
+    end
+
     test "checks every filter on the field, not only the first", %{p: p} do
       q =
         query(
@@ -195,6 +215,16 @@ defmodule O11yProxy.PolicyTest do
 
       assert {:ok, %Query{filters: filters}} = Policy.authorize(p, "metrics", query(), @now)
       assert List.last(filters) == %Filter{field: "project", op: :in, value: ["p1", "p2"]}
+    end
+
+    test "injects claim values as strings, the same form they are checked in" do
+      p = policy(constraints: [%Constraint{field: "tenant", inject: true, allowed: [4012]}])
+      assert {:ok, %Query{filters: filters}} = Policy.authorize(p, "metrics", query(), @now)
+      assert List.last(filters) == %Filter{field: "tenant", op: :eq, value: "4012"}
+
+      p = policy(constraints: [%Constraint{field: "tenant", inject: true, allowed: [1, "a"]}])
+      assert {:ok, %Query{filters: filters}} = Policy.authorize(p, "metrics", query(), @now)
+      assert List.last(filters) == %Filter{field: "tenant", op: :in, value: ["1", "a"]}
     end
 
     test "leaves an in-bounds filter alone and still refuses an out-of-bounds one" do
@@ -254,6 +284,19 @@ defmodule O11yProxy.PolicyTest do
         )
 
       assert {:ok, _} = Policy.authorize(p, "metrics", query(), @now)
+    end
+  end
+
+  describe "mode_for/2" do
+    test "is the first preference the policy allows" do
+      assert Policy.mode_for(nil, [:full, :sample]) == :full
+      assert Policy.mode_for(policy(), [:full, :sample]) == :full
+
+      assert Policy.mode_for(policy(modes: [:summary, :sample]), [:full, :sample, :summary]) ==
+               :sample
+
+      assert Policy.mode_for(policy(modes: [:summary]), [:full, :sample, :summary]) == :summary
+      assert Policy.mode_for(policy(modes: [:summary]), [:full]) == nil
     end
   end
 

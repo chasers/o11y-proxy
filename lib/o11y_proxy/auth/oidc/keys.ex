@@ -28,7 +28,15 @@ defmodule O11yProxy.Auth.OIDC.Keys do
   alias O11yProxy.Auth.OIDC.Verifier
 
   @table __MODULE__
-  @call_timeout 10_000
+  # A fetch is two requests in sequence (discovery, then the JWKS), each bounded below at
+  # 2s to connect plus 3s to answer, so this leaves room for both and a little more.
+  @call_timeout 12_000
+  @http_options [
+    connect_options: [timeout: 2_000],
+    pool_timeout: 2_000,
+    receive_timeout: 3_000,
+    retry: false
+  ]
   @initial_retry_ms 1_000
 
   @doc """
@@ -188,7 +196,7 @@ defmodule O11yProxy.Auth.OIDC.Keys do
   defp algorithms(_opts, _advertised), do: ["RS256"]
 
   defp get_json(url, state) do
-    case Req.get(url, [receive_timeout: 5_000, retry: false] ++ state.req_options) do
+    case Req.get(url, @http_options ++ state.req_options) do
       {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
 
