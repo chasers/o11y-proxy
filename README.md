@@ -193,6 +193,37 @@ curl -s localhost:4000/v1/context -H 'content-type: application/json' \
   -d '{"trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"}' | jq
 ```
 
+### Authentication
+
+The server is open by default, and only listens on loopback.
+To share it, turn on auth and set `bind`.
+
+- **`auth: token`** — one shared bearer token, from `O11Y_PROXY_TOKEN`.
+- **`auth: oidc`** — a JWT from any OpenID Connect issuer.
+- **`policies:`** — per role, which sources a caller sees, and which filters every query must carry.
+
+```yaml
+server:
+  bind: 0.0.0.0
+  auth: oidc
+  oidc:
+    issuer: https://issuer.example.com
+    audience: o11y-proxy
+    role_claim: o11y.role
+
+policies:
+  support:
+    sources: [prod_metrics]
+    constraints:
+      - field: labels.project
+        require: true                # every query must name a project
+        allowed_claim: o11y.projects # ...one the token lists
+```
+
+`/healthz` and `/openapi.json` stay open. Everything else needs `Authorization: Bearer <token>`.
+The CLI is never limited, since it runs as you.
+[docs/authentication.md](docs/authentication.md) has the full reference and worked examples.
+
 For a real service, use the release tarball instead of the binary. It has the standard
 start scripts:
 

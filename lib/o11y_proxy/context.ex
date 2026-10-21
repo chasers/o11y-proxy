@@ -27,7 +27,7 @@ defmodule O11yProxy.Context do
   adapter existed, and keeping it is deliberate.
   """
 
-  alias O11yProxy.{Query, ResponseError, Sources}
+  alias O11yProxy.{Caller, Policy, Query, ResponseError, Sources}
   alias O11yProxy.Query.Filter
 
   # The caller gives no window for a trace_id/error_id lookup, but ClickHouse (rightly)
@@ -43,13 +43,20 @@ defmodule O11yProxy.Context do
   `{:error, :ambiguous_request | :empty_request | {:invalid_time, _}}` for a malformed
   request; anything else — including every source failing — comes back as `{:ok, bundle}`
   with the failures in `bundle.errors`.
+
+  Only sources `caller`'s policy permits are fanned out to. One that is permitted but
+  whose constraints this request cannot satisfy — a required filter the correlation has
+  no value for — comes back in `errors` with code `forbidden`, like any other source that
+  could not answer. The lookback window and per-source limit are chosen here rather than
+  by the caller, so they are kept inside the policy's caps instead of tripping them.
   """
-  @spec resolve(map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def resolve(params, opts \\ []) do
+  @spec resolve(map(), Caller.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def resolve(params, %Caller{} = caller, opts \\ []) do
     started = System.monotonic_time(:millisecond)
+    opts = Keyword.put(opts, :caller, caller)
 
     with {:ok, entry} <- classify(params),
-         {:ok, bundle} <- run(entry, Sources.entries(), opts) do
+         {:ok, bundle} <- run(entry, Sources.entries(caller), opts) do
       {:ok, put_elapsed(bundle, started)}
     end
   end
@@ -185,6 +192,8 @@ defmodule O11yProxy.Context do
         bundle
 
       {service, window_from, window_to} ->
+        window_from = clamp_to_lookback(window_from, now, opts)
+
         metrics =
           metrics_sources
           |> Enum.map(fn source ->
@@ -294,7 +303,9 @@ defmodule O11yProxy.Context do
     O11yProxy.TaskSupervisor
     |> Task.Supervisor.async_stream_nolink(
       entries,
-      fn {source, query} -> Sources.run_query(source.name, query, per_source) end,
+      fn {source, query} ->
+        Sources.run_query(source.name, query, Keyword.fetch!(opts, :caller), per_source)
+      end,
       timeout: deadline,
       on_timeout: :kill_task,
       max_concurrency: length(entries),
@@ -321,7 +332,7 @@ defmodule O11yProxy.Context do
     # here too — otherwise a source already known to be down still burns the full
     # per-source timeout on every error_id request.
     Enum.reduce_while(candidates, {:error, []}, fn source, {:error, failures} ->
-      case fetch_source_error(source, error_id, per_source) do
+      case fetch_source_error(source, error_id, per_source, opts) do
         {:ok, record} -> {:halt, {:ok, %{record | source: source.name}}}
         {:error, :not_found} -> {:cont, {:error, failures}}
         {:error, reason} -> {:cont, {:error, [{source.name, reason} | failures]}}
@@ -334,10 +345,17 @@ defmodule O11yProxy.Context do
     end
   end
 
-  defp fetch_source_error(source, error_id, timeout) do
-    case Sources.breaker_status(source.name) do
-      {:open, retry_after_ms} -> {:error, {:circuit_open, retry_after_ms}}
-      :closed -> fetch_by_id_in_task(source, error_id, timeout)
+  # A lookup by ID skips `Sources.run_query/4`, so the policy is checked here: an ID
+  # carries no filter a constraint could scope, and the policy decides whether that is
+  # acceptable for this source.
+  defp fetch_source_error(source, error_id, timeout, opts) do
+    %Caller{policy: policy} = Keyword.fetch!(opts, :caller)
+
+    with :ok <- Policy.authorize_lookup(policy, source.name) do
+      case Sources.breaker_status(source.name) do
+        {:open, retry_after_ms} -> {:error, {:circuit_open, retry_after_ms}}
+        :closed -> fetch_by_id_in_task(source, error_id, timeout)
+      end
     end
   end
 
@@ -466,6 +484,34 @@ defmodule O11yProxy.Context do
     end
   end
 
-  defp lookback(opts), do: Keyword.get(opts, :lookback_seconds, @default_lookback_seconds)
-  defp limit(opts), do: Keyword.get(opts, :limit, @per_source_limit)
+  defp lookback(opts) do
+    opts
+    |> Keyword.get(:lookback_seconds, @default_lookback_seconds)
+    |> within(Policy.lookback_cap(caller_policy(opts)))
+  end
+
+  defp limit(opts) do
+    opts
+    |> Keyword.get(:limit, @per_source_limit)
+    |> within(Policy.limit_cap(caller_policy(opts)))
+  end
+
+  # The stage-two window is padded around what stage one matched, so it can reach a few
+  # minutes past the lookback the caller is allowed. Trim it rather than have the metrics
+  # stage refused for a window the caller never asked for.
+  defp clamp_to_lookback(from, now, opts) do
+    case Policy.lookback_cap(caller_policy(opts)) do
+      nil ->
+        from
+
+      cap ->
+        earliest = DateTime.add(now, -cap, :second)
+        if DateTime.compare(from, earliest) == :lt, do: earliest, else: from
+    end
+  end
+
+  defp within(value, nil), do: value
+  defp within(value, cap), do: min(value, cap)
+
+  defp caller_policy(opts), do: Keyword.fetch!(opts, :caller).policy
 end

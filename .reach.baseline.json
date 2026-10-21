@@ -48,13 +48,13 @@
       "fingerprint": "sha256:985111c406b5c9ac8d73e5d307eaab763251a981e5bac2c29231aab04d354360",
       "message": "map shape [:cursor, :elapsed_ms, :native_queries, :returned, :sources_queried, :total_matched, :truncated] appears 3 times; consider a struct or explicit contract if it is domain data",
       "file": "lib/o11y_proxy/context.ex",
-      "line": 400
+      "line": 418
     },
     {
       "source": "smells",
       "kind": "fixed_shape_map",
-      "fingerprint": "sha256:9b195a4ccd6dd803947f25a839beb3dfb9e0fe4eaced090349404abac4e83b12",
-      "message": "map shape [:code, :message, :retry_after_ms] appears 12 times; consider a struct or explicit contract if it is domain data",
+      "fingerprint": "sha256:4f44d70bc5b486b5c770e47aaa7243ce9cf534ef0caa995ae954569e1df87203",
+      "message": "map shape [:code, :message, :retry_after_ms] appears 13 times; consider a struct or explicit contract if it is domain data",
       "file": "lib/o11y_proxy/response_error.ex",
       "line": 21
     }
@@ -68,7 +68,7 @@
         "src",
         "test/support"
       ],
-      "file_count": 38
+      "file_count": 48
     },
     "smells": {
       "mix_env": "test",
@@ -78,7 +78,7 @@
         "src",
         "test/support"
       ],
-      "file_count": 38
+      "file_count": 48
     }
   }
 }

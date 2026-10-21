@@ -31,6 +31,26 @@ defmodule O11yProxy.Query.Time do
     end
   end
 
+  @duration_re ~r/^(\d+)([smhdw])$/
+
+  @doc """
+  Parses a duration such as `"15m"` or `"7d"` into seconds, using the same units as the
+  relative `now-<n><unit>` form. Zero is refused: a cap of no time at all is a mistake.
+  """
+  @spec duration_seconds(String.t()) :: {:ok, pos_integer()} | {:error, term()}
+  def duration_seconds(str) when is_binary(str) do
+    case Regex.run(@duration_re, str) do
+      [_, digits, unit] ->
+        case String.to_integer(digits) * Map.fetch!(@unit_seconds, unit) do
+          0 -> {:error, {:invalid_duration, str}}
+          seconds -> {:ok, seconds}
+        end
+
+      _ ->
+        {:error, {:invalid_duration, str}}
+    end
+  end
+
   defp parse_absolute(str) do
     case DateTime.from_iso8601(str) do
       {:ok, dt, _offset} -> {:ok, DateTime.shift_zone!(dt, "Etc/UTC")}

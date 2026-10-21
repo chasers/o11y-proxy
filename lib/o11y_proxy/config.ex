@@ -7,20 +7,32 @@ defmodule O11yProxy.Config do
   source config fails at boot with a precise message.
   """
 
-  alias O11yProxy.Config.Source
+  alias O11yProxy.Config.{Policies, Source}
 
   @enforce_keys [:server, :defaults, :sources]
-  defstruct [:server, :defaults, :sources]
+  defstruct [:server, :defaults, :sources, policies: %{}]
 
   @type t :: %__MODULE__{
-          server: %{port: pos_integer(), auth: :none | :token, distribution: boolean()},
+          server: %{
+            port: pos_integer(),
+            bind: :inet.ip_address(),
+            auth: :none | :token | :oidc,
+            distribution: boolean(),
+            oidc: map() | nil
+          },
           defaults: %{limit: pos_integer(), max_window: String.t(), timeout: String.t()},
-          sources: [Source.t()]
+          sources: [Source.t()],
+          policies: %{optional(String.t()) => O11yProxy.Policy.t()}
         }
 
   @server_schema [
     port: [type: :pos_integer, default: 4000],
-    auth: [type: {:in, ["none", "token"]}, default: "none"],
+    bind: [
+      type: :string,
+      default: "127.0.0.1",
+      doc: "address to listen on. Anything but loopback needs auth: token or auth: oidc."
+    ],
+    auth: [type: {:in, ["none", "token", "oidc"]}, default: "none"],
     distribution: [
       type: :boolean,
       default: true,
@@ -28,6 +40,37 @@ defmodule O11yProxy.Config do
         "let the CLI reach a running daemon over Erlang distribution on loopback. Off " <>
           "means every CLI invocation runs in-process."
     ]
+  ]
+
+  @oidc_schema [
+    issuer: [
+      type: :string,
+      required: true,
+      doc: "the exact `iss` of accepted tokens; discovery is fetched from under it"
+    ],
+    audience: [
+      type: {:or, [:string, {:list, :string}]},
+      required: true,
+      doc: "a token's `aud` must contain one of these"
+    ],
+    jwks_uri: [
+      type: :string,
+      doc:
+        "fetch keys from here and skip discovery, for issuers that publish no discovery document"
+    ],
+    algorithms: [
+      type: {:list, {:in, O11yProxy.Auth.OIDC.Verifier.supported_algorithms()}},
+      doc: "accepted signing algorithms; default is what discovery advertises, else RS256"
+    ],
+    jwks_refresh_seconds: [type: :pos_integer, default: 300],
+    leeway_seconds: [
+      type: :non_neg_integer,
+      default: 60,
+      doc: "clock skew tolerated on exp and nbf"
+    ],
+    identity_claim: [type: :string, default: "sub", doc: "claim path that names the caller"],
+    role_claim: [type: :string, doc: "claim path holding the caller's role, a string or list"],
+    default_policy: [type: :string, doc: "policy for a token whose roles match none"]
   ]
 
   @defaults_schema [
@@ -128,25 +171,140 @@ defmodule O11yProxy.Config do
   # -- structural validation -------------------------------------------------------------
 
   defp build(data) when is_map(data) do
-    with {:ok, server} <- validate_block(Map.get(data, "server", %{}), @server_schema, :server),
+    {oidc_raw, server_raw} = split_oidc(Map.get(data, "server", %{}))
+
+    with {:ok, server} <- validate_block(server_raw, @server_schema, :server),
+         {:ok, server} <- finish_server(Map.new(server)),
+         {:ok, oidc} <- build_oidc(oidc_raw),
          {:ok, defaults} <-
            validate_block(Map.get(data, "defaults", %{}), @defaults_schema, :defaults),
-         {:ok, sources} <- build_sources(Map.get(data, "sources", []) || []) do
+         {:ok, sources} <- build_sources(Map.get(data, "sources", []) || []),
+         {:ok, policies} <-
+           Policies.build(
+             Map.get(data, "policies") || %{},
+             Enum.map(sources, & &1.name)
+           ),
+         :ok <- check_auth(server, oidc, policies) do
       {:ok,
        %__MODULE__{
-         server: server |> Map.new() |> Map.update!(:auth, &auth_atom/1),
+         server: Map.put(server, :oidc, oidc),
          defaults: Map.new(defaults),
-         sources: sources
+         sources: sources,
+         policies: policies
        }}
     end
   end
 
   defp build(other), do: {:error, {:invalid_config_shape, other}}
 
+  # `oidc:` is a nested mapping, and `to_opts/2` only looks one level deep, so it is taken
+  # out and validated as a block of its own.
+  defp split_oidc(server) when is_map(server), do: Map.pop(server, "oidc")
+  defp split_oidc(server), do: {nil, server}
+
+  defp finish_server(server) do
+    case :inet.parse_address(String.to_charlist(server.bind)) do
+      {:ok, address} ->
+        {:ok, %{server | bind: address, auth: auth_atom(server.auth)}}
+
+      {:error, _} ->
+        {:error, {:invalid_block, :server, "bind #{inspect(server.bind)} is not an IP address"}}
+    end
+  end
+
   defp auth_atom("none"), do: :none
   defp auth_atom("token"), do: :token
+  defp auth_atom("oidc"), do: :oidc
 
-  defp validate_block(map, schema, block_name) when is_map(map) do
+  defp build_oidc(nil), do: {:ok, nil}
+
+  defp build_oidc(raw) do
+    with {:ok, oidc} <- validate_block(raw, @oidc_schema, "server.oidc") do
+      {:ok, oidc |> Map.new() |> Map.update!(:audience, &List.wrap/1)}
+    end
+  end
+
+  # The combinations that would boot but not do what the operator meant. Each of these
+  # is a misconfiguration that fails *open* or silently, so it is refused at load rather
+  # than discovered in production.
+  defp check_auth(server, oidc, policies) do
+    with :ok <- check_bind(server),
+         :ok <- check_oidc_block(server.auth, oidc) do
+      check_policies(server.auth, oidc, policies)
+    end
+  end
+
+  defp check_bind(%{auth: :none, bind: bind}) do
+    if loopback?(bind) do
+      :ok
+    else
+      server_error(
+        "bind #{:inet.ntoa(bind)} accepts connections from other machines, " <>
+          "which needs auth: token or auth: oidc"
+      )
+    end
+  end
+
+  defp check_bind(_server), do: :ok
+
+  defp check_oidc_block(:oidc, nil),
+    do: server_error("auth: oidc needs a server.oidc block with at least issuer and audience")
+
+  defp check_oidc_block(auth, oidc) when auth != :oidc and not is_nil(oidc),
+    do: server_error("server.oidc is set but auth is #{auth}; set auth: oidc to use it")
+
+  defp check_oidc_block(_auth, _oidc), do: :ok
+
+  defp check_policies(:oidc, oidc, policies), do: check_oidc_policies(oidc, policies)
+  defp check_policies(_auth, _oidc, policies) when policies == %{}, do: :ok
+
+  defp check_policies(auth, _oidc, _policies) do
+    {:error,
+     {:invalid_block, :policies,
+      "policies are only enforced for auth: oidc, and auth is #{auth}. " <>
+        "Remove them or set auth: oidc, so access is never assumed to be limited " <>
+        "when it is not."}}
+  end
+
+  defp check_oidc_policies(oidc, policies) do
+    default = Map.get(oidc, :default_policy)
+    defined = policies |> Map.keys() |> Enum.sort() |> Enum.join(", ")
+
+    cond do
+      policies == %{} ->
+        {:error,
+         {:invalid_block, :policies,
+          "auth: oidc needs at least one policy. For \"any valid token may query " <>
+            "everything\", define one with sources: \"*\" and name it as default_policy."}}
+
+      is_nil(Map.get(oidc, :role_claim)) and is_nil(default) ->
+        {:error,
+         {:invalid_block, "server.oidc",
+          "set role_claim, default_policy, or both, so a token can be mapped to a policy"}}
+
+      not is_nil(default) and not Map.has_key?(policies, default) ->
+        {:error,
+         {:invalid_block, "server.oidc",
+          "default_policy #{inspect(default)} is not defined under policies " <>
+            "(defined: #{defined})"}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp loopback?({127, _, _, _}), do: true
+  defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback?(_address), do: false
+
+  defp server_error(message), do: {:error, {:invalid_block, :server, message}}
+
+  @doc false
+  # Shared with `O11yProxy.Config.Policies`, so every block in the file is validated, and
+  # reports an unknown key, the same way.
+  @spec validate_block(term(), keyword(), atom() | String.t()) ::
+          {:ok, keyword()} | {:error, term()}
+  def validate_block(map, schema, block_name) when is_map(map) do
     with {:ok, opts} <- to_opts(map, schema),
          {:ok, validated} <- validate(opts, schema) do
       {:ok, validated}
@@ -155,7 +313,7 @@ defmodule O11yProxy.Config do
     end
   end
 
-  defp validate_block(other, _schema, block_name),
+  def validate_block(other, _schema, block_name),
     do: {:error, {:invalid_block_shape, block_name, other}}
 
   defp build_sources(sources) when is_list(sources) do

@@ -24,6 +24,18 @@ defmodule O11yProxy.RemoteTest do
     end
   end
 
+  describe "handle/2" do
+    test "handle/1 is handle/2 as the local caller" do
+      request = %{"command" => "sources"}
+      assert Remote.handle(request) == Remote.handle(request, O11yProxy.Caller.local())
+    end
+
+    test "a caller's policy hides sources it does not permit" do
+      caller = %O11yProxy.Caller{id: "u", policy: %O11yProxy.Policy{name: "none", sources: []}}
+      assert {:ok, %{sources: []}} = Remote.handle(%{"command" => "sources"}, caller)
+    end
+  end
+
   describe "handle/1" do
     test "an unrecognized request is a structured error, not a crash" do
       assert {:error, %{error: "invalid_query"}} = Remote.handle(%{"command" => "nope"})

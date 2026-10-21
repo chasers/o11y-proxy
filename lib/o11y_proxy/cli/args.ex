@@ -10,7 +10,7 @@ defmodule O11yProxy.CLI.Args do
 
   The request maps this produces are the *same* shape `POST /v1/query` and
   `POST /v1/context` receive, so `O11yProxy.Query.parse/2` and
-  `O11yProxy.Context.resolve/2` validate CLI input and HTTP input identically. The CLI
+  `O11yProxy.Context.resolve/3` validate CLI input and HTTP input identically. The CLI
   deliberately does not re-implement "from must be before to" or "exactly one of
   trace_id/error_id/service" — those live in the core and stay in one place.
   """

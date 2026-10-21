@@ -35,11 +35,12 @@ defmodule O11yProxy.Router do
   end
 
   get "/v1/sources" do
-    respond(conn, Remote.handle(%{"command" => "sources", "request" => %{}}))
+    respond(conn, Remote.handle(%{"command" => "sources", "request" => %{}}, caller(conn)))
   end
 
   get "/v1/sources/:name/schema" do
-    respond(conn, Remote.handle(%{"command" => "schema", "request" => %{"source" => name}}))
+    request = %{"command" => "schema", "request" => %{"source" => name}}
+    respond(conn, Remote.handle(request, caller(conn)))
   end
 
   get "/openapi.json" do
@@ -55,11 +56,13 @@ defmodule O11yProxy.Router do
   end
 
   post "/v1/query" do
-    respond(conn, Remote.handle(%{"command" => "query", "request" => conn.body_params}))
+    request = %{"command" => "query", "request" => conn.body_params}
+    respond(conn, Remote.handle(request, caller(conn)))
   end
 
   post "/v1/context" do
-    respond(conn, Remote.handle(%{"command" => "context", "request" => conn.body_params}))
+    request = %{"command" => "context", "request" => conn.body_params}
+    respond(conn, Remote.handle(request, caller(conn)))
   end
 
   match _ do
@@ -83,10 +86,14 @@ defmodule O11yProxy.Router do
   defp respond(conn, {:error, %{error: name} = body}),
     do: send_json(conn, status_for(name), body)
 
+  defp status_for("forbidden"), do: 403
   defp status_for("not_found"), do: 404
   defp status_for("not_supported"), do: 404
   defp status_for("schema_error"), do: 502
   defp status_for(_), do: 400
+
+  # Set by `O11yProxy.Plugs.Auth` on every route that reaches a data endpoint.
+  defp caller(conn), do: conn.assigns.caller
 
   defp send_json(conn, status, body) do
     conn

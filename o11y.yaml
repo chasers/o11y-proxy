@@ -6,7 +6,7 @@
 
 server:
   port: 4000
-  auth: none # none | token — 'token' is the shared-deployment seam, see 04-cross-cutting.md
+  auth: none # none | token | oidc — see docs/authentication.md
 
 defaults:
   limit: 50

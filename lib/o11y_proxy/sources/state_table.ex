@@ -56,7 +56,7 @@ defmodule O11yProxy.Sources.StateTable do
   Per-source circuit breaker state, stored on the same entry `Sources.Server` already
   writes (`put/2`) rather than a separate table or process —
   "policy holder, not a bottleneck": these are written
-  directly from the supervised `Task` that runs a query in `O11yProxy.Sources.run_query/3`,
+  directly from the supervised `Task` that runs a query in `O11yProxy.Sources.run_query/4`,
   with no `GenServer.call` round trip, so one hammered source's breaker bookkeeping never
   queues behind that source's own `:capabilities`/`:health` calls.
 

@@ -37,7 +37,7 @@ defmodule O11yProxy.Remote do
   release do not share one, and simply fall back to in-process rather than failing.
   """
 
-  alias O11yProxy.{Context, Query, Response, ResponseError, Sources}
+  alias O11yProxy.{Caller, Context, Policy, Query, Response, ResponseError, Sources}
 
   @protocol_version 1
 
@@ -85,19 +85,29 @@ defmodule O11yProxy.Remote do
   end
 
   @doc """
-  Runs one command. `request` is the same string-keyed map the corresponding HTTP
-  endpoint receives (straight from `Jason.decode!/1`, or built by `O11yProxy.CLI.Args`).
+  Runs one command as the local, unrestricted caller. This is what the CLI calls, in
+  process or over `:erpc` — its arity is part of the cross-version contract, which is
+  why the caller-aware form is a separate `handle/2` rather than a new argument here.
   """
   @spec handle(map()) :: {:ok, map()} | {:error, map()}
-  def handle(%{"command" => "query", "request" => request}) do
-    case Query.parse(request, default_limit: Response.default_limit()) do
-      {:ok, query} -> run_query(query)
+  def handle(request), do: handle(request, Caller.local())
+
+  @doc """
+  Runs one command for `caller`. `request` is the same string-keyed map the corresponding
+  HTTP endpoint receives (straight from `Jason.decode!/1`, or built by
+  `O11yProxy.CLI.Args`). The caller's policy is enforced in `O11yProxy.Sources`, not
+  here, so this stays dispatch only.
+  """
+  @spec handle(map(), Caller.t()) :: {:ok, map()} | {:error, map()}
+  def handle(%{"command" => "query", "request" => request}, caller) do
+    case Query.parse(request, default_limit: default_limit(caller)) do
+      {:ok, query} -> run_query(query, caller)
       {:error, reason} -> invalid_query(inspect(reason))
     end
   end
 
-  def handle(%{"command" => "context", "request" => request}) do
-    case Context.resolve(request) do
+  def handle(%{"command" => "context", "request" => request}, caller) do
+    case Context.resolve(request, caller) do
       {:ok, bundle} ->
         {:ok, Response.context_bundle(bundle)}
 
@@ -112,14 +122,17 @@ defmodule O11yProxy.Remote do
     end
   end
 
-  def handle(%{"command" => "sources"}), do: {:ok, %{sources: Sources.list()}}
+  def handle(%{"command" => "sources"}, caller), do: {:ok, %{sources: Sources.list(caller)}}
 
-  def handle(%{"command" => "health"}), do: {:ok, Sources.healthz()}
+  def handle(%{"command" => "health"}, _caller), do: {:ok, Sources.healthz()}
 
-  def handle(%{"command" => "schema", "request" => %{"source" => name}}) do
-    case Sources.schema(name) do
+  def handle(%{"command" => "schema", "request" => %{"source" => name}}, caller) do
+    case Sources.schema(name, caller) do
       {:ok, schema} ->
         {:ok, schema}
+
+      {:error, {:forbidden, message}} ->
+        forbidden(message)
 
       {:error, :not_found} ->
         {:error, %{error: "not_found", message: "no such source: #{name}"}}
@@ -136,23 +149,28 @@ defmodule O11yProxy.Remote do
     end
   end
 
-  def handle(other) do
+  def handle(other, _caller) do
     {:error, %{error: "invalid_query", message: "unrecognized request: #{inspect(other)}"}}
   end
 
   # Single-source only. Fan-out across several sources at once — merging, ranking and
   # budget-shaping one combined result — is not built. `/v1/context` is the way to reach
   # several sources in one call today: it correlates rather than merges.
-  defp run_query(%{sources: [name]} = query) do
+  defp run_query(%{sources: [name]} = query, caller) do
     started = System.monotonic_time(:millisecond)
 
-    case Sources.run_query(name, query) do
+    case Sources.run_query(name, query, caller) do
       {:ok, result} ->
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, Response.query_envelope(name, result, query.mode, elapsed, [])}
 
       {:error, :not_found} ->
         {:error, %{error: "not_found", message: "no such source: #{name}"}}
+
+      # A policy refusal is a request this caller may not make, not a source that broke,
+      # so it is refused outright rather than reported as a partial result.
+      {:error, {:forbidden, message}} ->
+        forbidden(message)
 
       # A backend that failed is a partial answer, not a failed request: the envelope goes
       # out with the failure in `errors[]`, so a caller still learns which source broke and
@@ -165,12 +183,12 @@ defmodule O11yProxy.Remote do
     end
   end
 
-  defp run_query(%{sources: nil}) do
+  defp run_query(%{sources: nil}, _caller) do
     invalid_query("sources is required — name exactly one source")
   end
 
   # Matches [] and [_, _ | _] alike: anything that is not exactly one source.
-  defp run_query(%{sources: _}) do
+  defp run_query(%{sources: _}, _caller) do
     {:error,
      %{
        error: "unsupported",
@@ -180,6 +198,18 @@ defmodule O11yProxy.Remote do
            "across every configured source in a single call."
      }}
   end
+
+  # A limit the caller did not send is ours to choose, so it is kept inside their
+  # policy's cap rather than refused for exceeding it. A limit they did send is checked
+  # as given.
+  defp default_limit(%Caller{policy: policy}) do
+    case Policy.limit_cap(policy) do
+      nil -> Response.default_limit()
+      cap -> min(cap, Response.default_limit())
+    end
+  end
+
+  defp forbidden(message), do: {:error, %{error: "forbidden", message: message}}
 
   defp invalid_query(message), do: {:error, %{error: "invalid_query", message: message}}
 end

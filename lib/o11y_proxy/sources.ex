@@ -5,6 +5,7 @@ defmodule O11yProxy.Sources do
   against one source's adapter state without serializing through its `GenServer`.
   """
 
+  alias O11yProxy.{Caller, Policy}
   alias O11yProxy.Config.Source
   alias O11yProxy.Sources.StateTable
 
@@ -27,10 +28,14 @@ defmodule O11yProxy.Sources do
     end)
   end
 
-  @doc "Configured sources, their signal, and capabilities — the `/v1/sources` payload."
-  @spec list() :: [map()]
-  def list do
+  @doc """
+  The sources `caller` may see, their signal, and capabilities — the `/v1/sources`
+  payload. A source outside the caller's policy is not listed at all.
+  """
+  @spec list(Caller.t()) :: [map()]
+  def list(%Caller{policy: policy}) do
     StateTable.all()
+    |> Enum.filter(fn {name, _entry} -> Policy.permits_source?(policy, name) end)
     |> Enum.map(fn {name,
                     %{backend: backend, backend_name: backend_name, signal: signal, state: state}} ->
       %{
@@ -44,9 +49,11 @@ defmodule O11yProxy.Sources do
   end
 
   @doc "Canonical<->native field map for one source — `/v1/sources/:name/schema`."
-  @spec schema(String.t()) :: {:ok, map()} | {:error, :not_found | :not_supported | term()}
-  def schema(name) do
-    with {:ok, %{backend: backend, state: state}} <- fetch(name) do
+  @spec schema(String.t(), Caller.t()) ::
+          {:ok, map()} | {:error, :not_found | :not_supported | Policy.violation() | term()}
+  def schema(name, %Caller{policy: policy}) do
+    with {:ok, %{backend: backend, state: state}} <- fetch(name),
+         :ok <- Policy.authorize_source(policy, name) do
       if function_exported?(backend, :schema, 1) do
         backend.schema(state)
       else
@@ -79,14 +86,15 @@ defmodule O11yProxy.Sources do
   end
 
   @doc """
-  Every configured source as `%{name, backend, backend_name, signal, state}` — the
-  internal shape (adapter module + state), unlike `list/0`'s public `/v1/sources`
+  Every source `caller` may query, as `%{name, backend, backend_name, signal, state}` —
+  the internal shape (adapter module + state), unlike `list/1`'s public `/v1/sources`
   payload. Used by `O11yProxy.Context`'s fan-out, which needs to group sources by signal
-  and call adapter callbacks directly.
+  and call adapter callbacks directly; a source outside the policy is never fanned out to.
   """
-  @spec entries() :: [map()]
-  def entries do
+  @spec entries(Caller.t()) :: [map()]
+  def entries(%Caller{policy: policy}) do
     StateTable.all()
+    |> Enum.filter(fn {name, _entry} -> Policy.permits_source?(policy, name) end)
     |> Enum.map(fn {name, entry} -> Map.put(entry, :name, name) end)
     |> Enum.sort_by(& &1.name)
   end
@@ -111,13 +119,20 @@ defmodule O11yProxy.Sources do
   *configured source name* (not the backend type), since the adapter itself has no
   business knowing it.
 
-  Checks the source's circuit breaker first (`StateTable.breaker_status/1`) — if open,
+  Enforces `caller`'s policy first (`O11yProxy.Policy.authorize/4`), on the canonical
+  query and before any adapter sees it: this is the one place a policy is applied, for
+  every transport and for `/v1/context`'s fan-out alike. A violation is
+  `{:error, {:forbidden, message}}` and never reaches a backend or moves the breaker.
+  `caller` is required rather than defaulted, so a new call site cannot skip the policy
+  by leaving it out.
+
+  Then checks the source's circuit breaker (`StateTable.breaker_status/1`) — if open,
   fails fast with `{:error, {:circuit_open, retry_after_ms}}` without touching
   `compile/2`/`execute/2` at all, per "fail fast into the errors array rather than
   burning the caller's timeout budget". A successful
   execute closes the breaker; a failure (including a timeout) bumps its failure count.
   """
-  @spec run_query(String.t(), O11yProxy.Query.t(), timeout()) ::
+  @spec run_query(String.t(), O11yProxy.Query.t(), Caller.t(), timeout()) ::
           {:ok,
            %{
              records: [map()],
@@ -126,13 +141,16 @@ defmodule O11yProxy.Sources do
              cursor: String.t() | nil
            }}
           | {:error, term()}
-  def run_query(name, query, timeout \\ 30_000) do
-    case StateTable.breaker_status(name) do
-      {:open, retry_after_ms} ->
-        {:error, {:circuit_open, retry_after_ms}}
+  def run_query(name, query, %Caller{policy: policy}, timeout \\ 30_000) do
+    with {:ok, entry} <- fetch(name),
+         {:ok, query} <- Policy.authorize(policy, name, query, DateTime.utc_now()) do
+      case StateTable.breaker_status(name) do
+        {:open, retry_after_ms} ->
+          {:error, {:circuit_open, retry_after_ms}}
 
-      :closed ->
-        do_run_query(name, query, timeout)
+        :closed ->
+          do_run_query(name, entry, query, timeout)
+      end
     end
   end
 
@@ -144,9 +162,8 @@ defmodule O11yProxy.Sources do
   # filter and expects the ones that can't express it (Sentry) to say so, so a handful of
   # those requests would otherwise trip a perfectly healthy source's breaker and make it
   # report `unreachable` for the next 30s.
-  defp do_run_query(name, query, timeout) do
-    with {:ok, %{backend: backend, state: state}} <- fetch(name),
-         {:ok, native} <- backend.compile(state, query) do
+  defp do_run_query(name, %{backend: backend, state: state}, query, timeout) do
+    with {:ok, native} <- backend.compile(state, query) do
       case execute_in_task(backend, state, native, timeout) do
         {:ok, result} ->
           StateTable.record_success(name)

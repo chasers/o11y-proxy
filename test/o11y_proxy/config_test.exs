@@ -34,7 +34,15 @@ defmodule O11yProxy.ConfigTest do
     """)
 
     assert {:ok, %Config{} = config} = Config.load(path: path)
-    assert config.server == %{port: 4001, auth: :none, distribution: true}
+
+    assert config.server == %{
+             port: 4001,
+             bind: {127, 0, 0, 1},
+             auth: :none,
+             oidc: nil,
+             distribution: true
+           }
+
     assert %{limit: 25, max_window: "3d", timeout: "10s"} = config.defaults
     assert [%Config.Source{} = source] = config.sources
     assert source.name == "app_logs"
@@ -56,7 +64,13 @@ defmodule O11yProxy.ConfigTest do
     assert {:ok, %Config{server: server, defaults: defaults, sources: []}} =
              Config.load(path: path)
 
-    assert server == %{port: 4000, auth: :none, distribution: true}
+    assert server == %{
+             port: 4000,
+             bind: {127, 0, 0, 1},
+             auth: :none,
+             oidc: nil,
+             distribution: true
+           }
 
     assert defaults == %{
              limit: 50,
@@ -128,6 +142,173 @@ defmodule O11yProxy.ConfigTest do
   test "no config file anywhere is a structured error, not a crash" do
     assert {:error, {:no_config_file, _candidates}} =
              Config.load(path: "/nonexistent/definitely/not/here.yaml")
+  end
+
+  describe "server.bind, server.oidc and policies" do
+    @source_block """
+    sources:
+      - name: app_logs
+        backend: fake
+        signal: logs
+        table: otel_logs
+        allow_raw: false
+    """
+
+    @oidc_block """
+      oidc:
+        issuer: https://issuer.example.com
+        audience: o11y-proxy
+        role_claim: o11y.role
+    """
+
+    @policy_block """
+    policies:
+      support:
+        sources: [app_logs]
+        max_lookback: 1d
+        constraints:
+          - field: project
+            require: true
+            allowed_claim: o11y.projects
+    """
+
+    defp load_yaml(dir, yaml) do
+      path = Path.join(dir, "o11y.yaml")
+      File.write!(path, yaml)
+      Config.load(path: path)
+    end
+
+    defp invalid!(dir, yaml) do
+      assert {:error, {:invalid_block, block, message} = reason} = load_yaml(dir, yaml)
+      assert is_binary(Config.format_error(reason))
+      {block, message}
+    end
+
+    @tag :tmp_dir
+    test "loads auth: oidc with its block and policies", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  bind: 0.0.0.0\n  auth: oidc\n" <>
+          @oidc_block <> @source_block <> @policy_block
+
+      assert {:ok, config} = load_yaml(dir, yaml)
+      assert config.server.bind == {0, 0, 0, 0}
+      assert config.server.auth == :oidc
+
+      assert %{
+               issuer: "https://issuer.example.com",
+               audience: ["o11y-proxy"],
+               identity_claim: "sub",
+               role_claim: "o11y.role",
+               jwks_refresh_seconds: 300,
+               leeway_seconds: 60
+             } = config.server.oidc
+
+      assert %{"support" => %O11yProxy.Policy{max_lookback_seconds: 86_400}} = config.policies
+    end
+
+    @tag :tmp_dir
+    test "accepts an IPv6 bind", %{tmp_dir: dir} do
+      assert {:ok, config} = load_yaml(dir, "server:\n  bind: \"::1\"\n")
+      assert config.server.bind == {0, 0, 0, 0, 0, 0, 0, 1}
+    end
+
+    @tag :tmp_dir
+    test "refuses a bind that is not an IP address", %{tmp_dir: dir} do
+      assert {:server, message} = invalid!(dir, "server:\n  bind: localhost\n")
+      assert message =~ "not an IP address"
+    end
+
+    @tag :tmp_dir
+    test "refuses auth: none on a non-loopback bind", %{tmp_dir: dir} do
+      assert {:server, message} = invalid!(dir, "server:\n  bind: 0.0.0.0\n")
+      assert message =~ "needs auth: token or auth: oidc"
+    end
+
+    @tag :tmp_dir
+    test "allows auth: token on a non-loopback bind", %{tmp_dir: dir} do
+      assert {:ok, _} = load_yaml(dir, "server:\n  bind: 0.0.0.0\n  auth: token\n")
+    end
+
+    @tag :tmp_dir
+    test "refuses auth: oidc with no oidc block", %{tmp_dir: dir} do
+      assert {:server, message} =
+               invalid!(dir, "server:\n  auth: oidc\n" <> @source_block <> @policy_block)
+
+      assert message =~ "needs a server.oidc block"
+    end
+
+    @tag :tmp_dir
+    test "refuses an oidc block when auth is not oidc", %{tmp_dir: dir} do
+      assert {:server, message} = invalid!(dir, "server:\n  auth: token\n" <> @oidc_block)
+      assert message =~ "set auth: oidc"
+    end
+
+    @tag :tmp_dir
+    test "refuses policies when auth is not oidc, since they would not be enforced",
+         %{tmp_dir: dir} do
+      assert {:policies, message} =
+               invalid!(dir, "server:\n  auth: token\n" <> @source_block <> @policy_block)
+
+      assert message =~ "only enforced for auth: oidc"
+    end
+
+    @tag :tmp_dir
+    test "refuses auth: oidc with no policies", %{tmp_dir: dir} do
+      assert {:policies, message} = invalid!(dir, "server:\n  auth: oidc\n" <> @oidc_block)
+      assert message =~ "at least one policy"
+    end
+
+    @tag :tmp_dir
+    test "refuses an oidc block missing its required keys", %{tmp_dir: dir} do
+      yaml = "server:\n  auth: oidc\n  oidc:\n    issuer: https://issuer.example.com\n"
+      assert {"server.oidc", message} = invalid!(dir, yaml)
+      assert message =~ "audience"
+    end
+
+    @tag :tmp_dir
+    test "refuses an unsupported or symmetric algorithm", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  auth: oidc\n" <>
+          @oidc_block <> "    algorithms: [HS256]\n" <> @source_block <> @policy_block
+
+      assert {"server.oidc", message} = invalid!(dir, yaml)
+      assert message =~ "algorithms"
+    end
+
+    @tag :tmp_dir
+    test "needs a role_claim or a default_policy", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  auth: oidc\n  oidc:\n    issuer: https://i.example\n    audience: x\n" <>
+          @source_block <> @policy_block
+
+      assert {"server.oidc", message} = invalid!(dir, yaml)
+      assert message =~ "role_claim, default_policy, or both"
+    end
+
+    @tag :tmp_dir
+    test "refuses a default_policy that is not defined", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  auth: oidc\n" <>
+          @oidc_block <>
+          "    default_policy: viewer\n" <>
+          @source_block <> @policy_block
+
+      assert {"server.oidc", message} = invalid!(dir, yaml)
+      assert message =~ ~s(default_policy "viewer" is not defined)
+      assert message =~ "support"
+    end
+
+    @tag :tmp_dir
+    test "refuses a policy that names an unconfigured source", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  auth: oidc\n" <>
+          @oidc_block <>
+          @source_block <>
+          "policies:\n  sre:\n    sources: [app_logz]\n"
+
+      assert {"policies.sre", message} = invalid!(dir, yaml)
+      assert message =~ ~s(unknown source "app_logz")
+    end
   end
 
   describe "format_error/1" do
@@ -206,7 +387,11 @@ defmodule O11yProxy.ConfigTest do
       :ok
     end
 
-    for path <- ["examples/cloudwatch-s3/o11y.yaml", "docker/o11y.yaml"] do
+    for path <- [
+          "examples/cloudwatch-s3/o11y.yaml",
+          "examples/oidc-rbac/o11y.yaml",
+          "docker/o11y.yaml"
+        ] do
       test "#{path} validates against the real backend registry" do
         assert {:ok, %{sources: [_ | _] = sources}} = Config.load(path: unquote(path))
         assert Enum.all?(sources, &is_atom(&1.backend))
