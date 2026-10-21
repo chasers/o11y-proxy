@@ -231,7 +231,28 @@ defmodule O11yProxy.Backends.S3.MappingTest do
       assert S3.health(state) == :ok
     end
 
-    test "schema/1 reports native types and samples low-cardinality columns", %{state: state} do
+    # `schema/1` samples values from the last day of partitions, anchored on the real clock,
+    # so the committed fixture (dated 2026-09-16/17) ages out of the window. Copying it under
+    # partitions dated today and yesterday keeps the test about sampling, not about the date
+    # it happens to run. Both days, because a 24-hour window always touches two dates.
+    @tag :tmp_dir
+    test "schema/1 reports native types and samples low-cardinality columns", %{tmp_dir: dir} do
+      today = Date.utc_today()
+
+      for {fixture, date} <- [{"2026-09-16", Date.add(today, -1)}, {"2026-09-17", today}] do
+        partition = Path.join([dir, "logs", "dt=#{date}"])
+        File.mkdir_p!(partition)
+
+        File.cp!(
+          "test/fixtures/s3/logs/dt=#{fixture}/data_0.parquet",
+          Path.join(partition, "data_0.parquet")
+        )
+      end
+
+      config = Keyword.put(@config, :uri, Path.join(dir, "logs/**/*.parquet"))
+      {:ok, validated} = NimbleOptions.validate(config, S3.config_schema())
+      {:ok, state} = S3.init(Map.new(validated))
+
       assert {:ok, %{fields: fields}} = S3.schema(state)
 
       by_canonical = Map.new(fields, &{&1.canonical, &1})
