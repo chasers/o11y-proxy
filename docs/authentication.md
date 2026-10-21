@@ -110,6 +110,7 @@ server:
 | `role_claim` | One of these two | | Claim path holding the role. A string or a list of strings. |
 | `default_policy` | One of these two | | Policy for a token whose roles match no policy. |
 | `identity_claim` | No | `sub` | Claim path naming the caller. |
+| `spiffe` | No | | Read roles out of a SPIFFE ID in `role_claim`. See [SPIFFE IDs as roles](#spiffe-ids-as-roles). |
 | `jwks_uri` | No | from discovery | Fetch keys here and skip discovery. |
 | `algorithms` | No | see below | Accepted signing algorithms. Asymmetric only. |
 | `jwks_refresh_seconds` | No | `300` | How often keys are refetched. |
@@ -131,6 +132,94 @@ A claim path is a dotted path into the token's claims.
 - `https://example.com/roles` reads `{"https://example.com/roles": [...]}`.
 - The longest matching key wins at each level.
 
+### SPIFFE IDs as roles
+
+Some issuers name a workload in `sub` and send no role claim.
+If `sub` is a [SPIFFE ID](https://spiffe.io/), the role can be read out of its path.
+
+The SPIFFE spec fixes the ID's syntax, not what its path means.
+Each issuer picks its own layout. So you describe the layout, in two parts:
+
+- `paths`: what the ID looks like, and which segments to keep.
+- `policy_names`: how to build policy names from those segments, in order.
+
+```yaml
+server:
+  oidc:
+    role_claim: sub                       # the claim holding the SPIFFE ID
+    spiffe:
+      trust_domain: broker.example.com
+      paths:
+        - /aws/{account}/{region}/role/{role}
+        - /aws/{account}/role/{role}      # one pattern per layout the issuer uses
+      policy_names:                       # tried in order. The first with a policy wins.
+        - "{account}/{role}"
+        - "{role}"
+```
+
+**`paths`** are matched one segment at a time:
+
+| Segment | Matches |
+|---|---|
+| `aws`, `role`, ... | That exact segment. Case matters. |
+| `*` | Any one segment. Not kept. |
+| `{name}` | Any one segment, kept as `name`. Lowercase letters, digits and `_`. |
+
+- A pattern must match every segment. The segment count must be equal.
+- A name can appear once per pattern.
+- The names mean nothing to the proxy. `{account}` is just a name you chose.
+
+**`policy_names`** are filled in from the kept segments:
+
+- `"{account}/{role}"` becomes `111122223333/sre`.
+- Text outside `{}` is kept as is.
+- An entry using a name the pattern did not keep is skipped.
+  Above, an ID without a region still gets `{account}/{role}` and `{role}`.
+
+How a token is matched:
+
+1. The ID must be a valid SPIFFE ID in `trust_domain`.
+   No port, query, fragment, `%` escapes, empty, `.` or `..` segments.
+   The scheme and trust domain must be lowercase.
+2. A pattern must match it.
+3. The `policy_names` are filled in, in order.
+4. The first name with a policy wins. So `111122223333/sre` beats `sre`.
+5. No match uses `default_policy`. Otherwise the caller gets `403`.
+   The message shows the ID and the names it gave.
+6. If two patterns match one ID and give different names, the caller gets `403`.
+   Fix the patterns. No guess is made.
+
+Config checks these at boot:
+
+- Every `policy_names` entry can be filled by at least one pattern.
+- Every pattern can fill at least one `policy_names` entry.
+- Patterns and names are well formed.
+
+Other layouts are just other config. Istio-style IDs, for example:
+
+```yaml
+spiffe:
+  trust_domain: cluster.local
+  paths: [/ns/{namespace}/sa/{sa}]
+  policy_names: ["{namespace}/{sa}", "{sa}"]
+```
+
+**Pin accounts for broad access.**
+
+- A role name is only unique inside one account.
+- A role-only policy, like `sre`, matches that role in every account.
+- Anyone who can create a role called `sre` in any account your broker signs for gets it.
+- So keep role-only policies small.
+- Put broad access, like `raw: allow` or `sources: "*"`, on account-pinned policies.
+- Or pin the account in the pattern itself: `/aws/111122223333/*/role/{role}`.
+
+Don't know the account IDs yet? Start with role-only policies.
+A refused token's `403` message shows the account, so you can pin it later.
+This only works without `default_policy`, since a default means no refusal.
+
+Not sure every ID has the same layout? List one pattern per layout.
+An ID that matches no pattern gets no role. It is never matched loosely.
+
 ### Key rotation
 
 - Keys refresh every `jwks_refresh_seconds`.
@@ -147,6 +236,7 @@ A policy is a named set of rules.
 - The role must match exactly one policy name.
 - No match uses `default_policy`, if set. Otherwise the caller gets `403`.
 - Two matching roles is a `403`. Policies are never merged.
+- With `spiffe:`, the first `policy_names` entry with a policy wins. That is precedence, not a merge.
 
 ```yaml
 policies:
@@ -514,22 +604,45 @@ policies:
 
 **If the broker sets only `sub`**
 
-You can key policies on `sub` directly:
+Read the role out of the SPIFFE ID instead. See [SPIFFE IDs as roles](#spiffe-ids-as-roles).
 
 ```yaml
 server:
+  bind: 0.0.0.0
+  auth: oidc
   oidc:
+    issuer: https://broker.example.com
+    audience: o11y-proxy
     role_claim: sub
+    spiffe:
+      trust_domain: broker.example.com
+      paths:
+        - /aws/{account}/*/role/{role}
+      policy_names:
+        - "{account}/{role}"
+        - "{role}"
 
 policies:
-  "spiffe://broker.example.com/aws/111122223333/ap-southeast-1/role/metrics-reader":
+  "111122223333/sre":        # sre in the prod account
+    sources: "*"
+    raw: allow
+  sre:                       # sre in any other account
+    sources: [prod_metrics]
+  metrics-reader:            # metrics-reader in any account
     sources: [prod_metrics]
 ```
 
-- This works, but it is brittle.
-- Matching is exact. The account and region are part of the ID.
-- The same IAM role in two regions needs two policies.
-- Prefer a role claim from the broker when you can.
+| Token `sub` ends in | Policy |
+|---|---|
+| `/aws/111122223333/ap-southeast-1/role/sre` | `111122223333/sre` |
+| `/aws/444455556666/eu-west-1/role/sre` | `sre` |
+| `/aws/<any account>/<any region>/role/metrics-reader` | `metrics-reader` |
+| `/aws/<any account>/<any region>/role/intern` | `403`. The message names `<account>/intern, intern`. |
+
+- The region is skipped with `*`. One policy covers every region.
+- `{account}/{role}` is listed first, so the account-pinned policy wins.
+- Broad access sits on the account-pinned policy. The role-only `sre` is kept small.
+- Projects cannot come from the ID. Without a broker claim, use a fixed `allowed` list.
 
 ## What a refused caller sees
 

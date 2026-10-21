@@ -298,6 +298,95 @@ defmodule O11yProxy.ConfigTest do
       assert message =~ "support"
     end
 
+    @spiffe_oidc_block """
+      oidc:
+        issuer: https://mint.example.com
+        audience: o11y-proxy
+        role_claim: sub
+        spiffe:
+          trust_domain: mint.example.com
+          paths:
+            - /aws/{account}/*/role/{role}
+          policy_names: ["{account}/{role}", "{role}"]
+    """
+
+    @tag :tmp_dir
+    test "compiles a spiffe block, and accepts account-pinned policy names", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  auth: oidc\n" <>
+          @spiffe_oidc_block <>
+          @source_block <>
+          "policies:\n  \"111122223333/sre\":\n    sources: \"*\"\n  sre:\n    sources: [app_logs]\n"
+
+      assert {:ok, config} = load_yaml(dir, yaml)
+
+      assert %O11yProxy.Auth.SPIFFE{trust_domain: "mint.example.com", patterns: [_]} =
+               config.server.oidc.spiffe
+
+      assert %{"111122223333/sre" => _, "sre" => _} = config.policies
+    end
+
+    @tag :tmp_dir
+    test "leaves spiffe out of the oidc config when it is not set", %{tmp_dir: dir} do
+      yaml = "server:\n  auth: oidc\n" <> @oidc_block <> @source_block <> @policy_block
+      assert {:ok, config} = load_yaml(dir, yaml)
+      refute Map.has_key?(config.server.oidc, :spiffe)
+    end
+
+    @tag :tmp_dir
+    test "refuses a spiffe policy name that no path can fill", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  auth: oidc\n" <>
+          String.replace(
+            @spiffe_oidc_block,
+            ~s("{account}/{role}", "{role}"),
+            ~s("{region}/{role}")
+          ) <>
+          @source_block <> @policy_block
+
+      assert {"server.oidc.spiffe", message} = invalid!(dir, yaml)
+      assert message =~ "no path captures"
+    end
+
+    @tag :tmp_dir
+    test "refuses a spiffe block with an unknown key, no paths or no policy_names", %{
+      tmp_dir: dir
+    } do
+      unknown =
+        "server:\n  auth: oidc\n" <>
+          @spiffe_oidc_block <> "      region: x\n" <> @source_block <> @policy_block
+
+      assert {"server.oidc.spiffe", message} = invalid!(dir, unknown)
+      assert message =~ "region"
+
+      no_paths =
+        "server:\n  auth: oidc\n" <>
+          String.replace(@spiffe_oidc_block, ~r/      paths:\n.*\n/, "") <>
+          @source_block <> @policy_block
+
+      assert {"server.oidc.spiffe", message} = invalid!(dir, no_paths)
+      assert message =~ "paths"
+
+      no_names =
+        "server:\n  auth: oidc\n" <>
+          String.replace(@spiffe_oidc_block, ~r/      policy_names:.*\n/, "") <>
+          @source_block <> @policy_block
+
+      assert {"server.oidc.spiffe", message} = invalid!(dir, no_names)
+      assert message =~ "policy_names"
+    end
+
+    @tag :tmp_dir
+    test "refuses spiffe without a role_claim to read the ID from", %{tmp_dir: dir} do
+      yaml =
+        "server:\n  auth: oidc\n" <>
+          String.replace(@spiffe_oidc_block, "    role_claim: sub\n", "") <>
+          "    default_policy: support\n" <> @source_block <> @policy_block
+
+      assert {"server.oidc", message} = invalid!(dir, yaml)
+      assert message =~ "set role_claim (usually sub)"
+    end
+
     @tag :tmp_dir
     test "refuses a policy that names an unconfigured source", %{tmp_dir: dir} do
       yaml =

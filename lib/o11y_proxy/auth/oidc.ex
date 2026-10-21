@@ -14,7 +14,9 @@ defmodule O11yProxy.Auth.OIDC do
     1. take the bearer token from the `authorization` header;
     2. find its key by `kid` (`O11yProxy.Auth.OIDC.Keys`);
     3. verify the signature and registered claims (`O11yProxy.Auth.OIDC.Verifier`);
-    4. pick exactly one policy from the role claim, or `default_policy`;
+    4. pick exactly one policy from the role claim, or `default_policy`. With
+       `spiffe:` configured the role claim holds a SPIFFE ID instead, and its roles are
+       derived from the ID's path (`O11yProxy.Auth.SPIFFE`);
     5. bind the policy's constraints to this token's claims.
 
   Steps 1–3 failing is `401`; 4–5 is `403`, because the caller *is* who they say and this
@@ -23,7 +25,7 @@ defmodule O11yProxy.Auth.OIDC do
 
   @behaviour O11yProxy.Auth
 
-  alias O11yProxy.Auth.Claims
+  alias O11yProxy.Auth.{Claims, SPIFFE}
   alias O11yProxy.Auth.OIDC.{Keys, Verifier}
   alias O11yProxy.{Caller, Policy}
 
@@ -79,19 +81,26 @@ defmodule O11yProxy.Auth.OIDC do
   end
 
   @doc false
-  # Exactly one of the token's roles has to name a policy. Two would need a rule for
-  # combining policies, and guessing one — union or intersection — is how access control
-  # goes quietly wrong, so it is refused with a message that says how to fix it.
   @spec select_policy(map(), map(), %{optional(String.t()) => Policy.t()}) ::
           {:ok, Policy.t()} | {:error, O11yProxy.Auth.failure()}
   def select_policy(claims, config, policies) do
+    case Map.get(config, :spiffe) do
+      nil -> select_by_roles(claims, config, policies)
+      spiffe -> select_by_spiffe(claims, config, spiffe, policies)
+    end
+  end
+
+  # Exactly one of the token's roles has to name a policy. Two would need a rule for
+  # combining policies, and guessing one — union or intersection — is how access control
+  # goes quietly wrong, so it is refused with a message that says how to fix it.
+  defp select_by_roles(claims, config, policies) do
     with {:ok, roles} <- roles(claims, Map.get(config, :role_claim)) do
       case roles |> Enum.filter(&Map.has_key?(policies, &1)) |> Enum.uniq() do
         [role] ->
           {:ok, Map.fetch!(policies, role)}
 
         [] ->
-          default_policy(config, policies, roles)
+          default_policy(config, policies, held(roles))
 
         several ->
           roles = Enum.join(several, ", ")
@@ -103,6 +112,39 @@ defmodule O11yProxy.Auth.OIDC do
       end
     end
   end
+
+  # One ID yields its names in the configured `policy_names` order, and the first with a
+  # policy wins — so "{account}/{role}" listed before "{role}" lets one account override
+  # the role's policy everywhere else. That is a precedence the operator wrote down, over
+  # a single identity, not a merge of two roles, so it does not reopen the "more than one
+  # role" refusal above.
+  defp select_by_spiffe(claims, %{role_claim: path} = config, spiffe, policies) do
+    case Claims.get(claims, path) do
+      :error -> default_policy(config, policies, "none")
+      {:ok, id} -> select_by_spiffe_id(id, path, config, spiffe, policies)
+    end
+  end
+
+  defp select_by_spiffe_id(id, path, config, spiffe, policies) do
+    shown = if is_binary(id), do: id, else: inspect(id)
+
+    case SPIFFE.roles(spiffe, id) do
+      {:ok, candidates} ->
+        case Enum.find(candidates, &Map.has_key?(policies, &1)) do
+          nil -> default_policy(config, policies, "#{shown}, giving #{held(candidates)}")
+          role -> {:ok, Map.fetch!(policies, role)}
+        end
+
+      {:none, reason} ->
+        default_policy(config, policies, "#{shown}, which #{reason}")
+
+      {:error, reason} ->
+        {:error, {:forbidden, "token claim #{path} (#{shown}) #{reason}"}}
+    end
+  end
+
+  defp held([]), do: "none"
+  defp held(roles), do: Enum.join(roles, ", ")
 
   defp roles(_claims, nil), do: {:ok, []}
 
@@ -122,12 +164,10 @@ defmodule O11yProxy.Auth.OIDC do
     end
   end
 
-  defp default_policy(%{default_policy: name}, policies, _roles) when is_binary(name),
+  defp default_policy(%{default_policy: name}, policies, _held) when is_binary(name),
     do: {:ok, Map.fetch!(policies, name)}
 
-  defp default_policy(config, _policies, roles) do
-    held = if roles == [], do: "none", else: Enum.join(roles, ", ")
-
+  defp default_policy(config, _policies, held) do
     {:error,
      {:forbidden,
       "no policy here matches the token's roles (claim #{Map.get(config, :role_claim)}: " <>

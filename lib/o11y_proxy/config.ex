@@ -7,6 +7,7 @@ defmodule O11yProxy.Config do
   source config fails at boot with a precise message.
   """
 
+  alias O11yProxy.Auth.SPIFFE
   alias O11yProxy.Config.{Policies, Source}
 
   @enforce_keys [:server, :defaults, :sources]
@@ -71,6 +72,24 @@ defmodule O11yProxy.Config do
     identity_claim: [type: :string, default: "sub", doc: "claim path that names the caller"],
     role_claim: [type: :string, doc: "claim path holding the caller's role, a string or list"],
     default_policy: [type: :string, doc: "policy for a token whose roles match none"]
+  ]
+
+  @spiffe_schema [
+    trust_domain: [
+      type: :string,
+      required: true,
+      doc: "the trust domain a role_claim SPIFFE ID must be in, e.g. example.org"
+    ],
+    paths: [
+      type: {:list, :string},
+      required: true,
+      doc: "path patterns such as /aws/{account}/*/role/{role}; see O11yProxy.Auth.SPIFFE"
+    ],
+    policy_names: [
+      type: {:list, :string},
+      required: true,
+      doc: "templates such as \"{account}/{role}\", filled from a match and tried in order"
+    ]
   ]
 
   @defaults_schema [
@@ -219,8 +238,23 @@ defmodule O11yProxy.Config do
   defp build_oidc(nil), do: {:ok, nil}
 
   defp build_oidc(raw) do
-    with {:ok, oidc} <- validate_block(raw, @oidc_schema, "server.oidc") do
-      {:ok, oidc |> Map.new() |> Map.update!(:audience, &List.wrap/1)}
+    {spiffe_raw, raw} = if is_map(raw), do: Map.pop(raw, "spiffe"), else: {nil, raw}
+
+    with {:ok, oidc} <- validate_block(raw, @oidc_schema, "server.oidc"),
+         {:ok, spiffe} <- build_spiffe(spiffe_raw) do
+      oidc = oidc |> Map.new() |> Map.update!(:audience, &List.wrap/1)
+      {:ok, if(spiffe, do: Map.put(oidc, :spiffe, spiffe), else: oidc)}
+    end
+  end
+
+  defp build_spiffe(nil), do: {:ok, nil}
+
+  defp build_spiffe(raw) do
+    with {:ok, opts} <- validate_block(raw, @spiffe_schema, "server.oidc.spiffe") do
+      case SPIFFE.compile(opts[:trust_domain], opts[:paths], opts[:policy_names]) do
+        {:ok, spiffe} -> {:ok, spiffe}
+        {:error, message} -> {:error, {:invalid_block, "server.oidc.spiffe", message}}
+      end
     end
   end
 
@@ -281,6 +315,11 @@ defmodule O11yProxy.Config do
         {:error,
          {:invalid_block, "server.oidc",
           "set role_claim, default_policy, or both, so a token can be mapped to a policy"}}
+
+      Map.has_key?(oidc, :spiffe) and is_nil(Map.get(oidc, :role_claim)) ->
+        {:error,
+         {:invalid_block, "server.oidc",
+          "spiffe: reads its SPIFFE ID from role_claim, so set role_claim (usually sub)"}}
 
       not is_nil(default) and not Map.has_key?(policies, default) ->
         {:error,
