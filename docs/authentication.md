@@ -58,6 +58,36 @@ server:
 - An `aud` claim that names this service.
 - An `exp` claim.
 - A claim that names the caller's role. You pick which claim.
+  The issuer must set it, not the caller. See [Claims the issuer must control](#claims-the-issuer-must-control).
+
+### Claims the issuer must control
+
+The proxy trusts every claim your issuer signs.
+
+- A caller cannot edit a claim. The signature would no longer verify.
+- But a signature only proves who issued the token.
+- It does not prove who chose the claims.
+
+So every claim you configure must be set by the issuer, never by the caller:
+
+- `role_claim`
+- every `allowed_claim`
+- `identity_claim`
+
+Watch for these:
+
+- **Requester-chosen claims.** Some issuers copy values from the token request into the token.
+  AWS outbound identity federation, for example, turns request tags into `key=value` claims.
+  Never point `role_claim` or `allowed_claim` at claims like these.
+  Put a token broker in front that sets claims from the caller's verified identity.
+  See [Example 6](#example-6-workload-identity-through-a-token-broker).
+- **User-editable profile fields.** Some issuers copy profile attributes into the token.
+  If users can edit those attributes, they can pick their own role.
+  Use admin-managed groups or roles instead.
+- **`default_policy` covers everyone the issuer will sign for.**
+  That is any account that can get a token with your `aud`.
+  If the issuer has open sign-up, that is anyone.
+  Keep `default_policy` small, or leave it unset.
 
 ### Config
 
@@ -425,6 +455,81 @@ policies:
 - `prod_metrics` is not affected. The constraint names only `app_logs`.
 - `attributes.environment eq staging` on `app_logs`: `403`.
 - A `raw` query: `403`. `raw` defaults to `deny`.
+
+### Example 6: workload identity through a token broker
+
+The callers are agents running under cloud IAM roles, not people.
+The cloud's own issuer lets the requester add claims, so it cannot be trusted for roles.
+A token broker verifies the cloud token and issues its own:
+
+- `sub` is a SPIFFE ID built from the caller's IAM role.
+- The role and projects come from the broker's own mapping for that IAM role.
+- The caller cannot choose any of them.
+
+**Token claims**
+
+```json
+{
+  "iss": "https://broker.example.com",
+  "aud": "o11y-proxy",
+  "sub": "spiffe://broker.example.com/aws/111122223333/ap-southeast-1/role/metrics-reader",
+  "exp": 1790000000,
+  "o11y": {
+    "role": "metrics-reader",
+    "projects": ["acme-web", "acme-api"]
+  }
+}
+```
+
+**Config**
+
+```yaml
+server:
+  bind: 0.0.0.0
+  auth: oidc
+  oidc:
+    issuer: https://broker.example.com   # the broker, never the cloud issuer
+    audience: o11y-proxy
+    role_claim: o11y.role
+    identity_claim: sub                  # the default
+
+policies:
+  metrics-reader:
+    sources: [prod_metrics]
+    constraints:
+      - field: labels.project
+        inject: true
+        allowed_claim: o11y.projects
+```
+
+**What happens**
+
+- The caller's identity is the SPIFFE ID. It names an IAM role, not a person.
+  Access can be traced to a role, not to a human.
+- `metrics-reader` matches. The caller sees only `prod_metrics`.
+- A query with no project filter gets `labels.project in [acme-web, acme-api]` added.
+- `labels.project eq other-co`: `403`.
+- Moving the IAM role to another account or region changes the `sub`.
+  Only the broker's mapping needs to follow. The proxy config stays the same.
+
+**If the broker sets only `sub`**
+
+You can key policies on `sub` directly:
+
+```yaml
+server:
+  oidc:
+    role_claim: sub
+
+policies:
+  "spiffe://broker.example.com/aws/111122223333/ap-southeast-1/role/metrics-reader":
+    sources: [prod_metrics]
+```
+
+- This works, but it is brittle.
+- Matching is exact. The account and region are part of the ID.
+- The same IAM role in two regions needs two policies.
+- Prefer a role claim from the broker when you can.
 
 ## What a refused caller sees
 
