@@ -81,6 +81,9 @@ Watch for these:
   Never point `role_claim` or `allowed_claim` at claims like these.
   Put a token broker in front that sets claims from the caller's verified identity.
   See [Example 6](#example-6-workload-identity-through-a-token-broker).
+- **Values a broker copies from the caller.** A broker may fill a claim from the cloud token or its tags.
+  That is only as safe as whoever set the value.
+  See [Setting these claims in the broker](#example-6-workload-identity-through-a-token-broker).
 - **User-editable profile fields.** Some issuers copy profile attributes into the token.
   If users can edit those attributes, they can pick their own role.
   Use admin-managed groups or roles instead.
@@ -136,6 +139,10 @@ A claim path is a dotted path into the token's claims.
 
 Some issuers name a workload in `sub` and send no role claim.
 If `sub` is a [SPIFFE ID](https://spiffe.io/), the role can be read out of its path.
+
+Prefer a role claim when your issuer can set one.
+See [Example 6](#example-6-workload-identity-through-a-token-broker).
+Parsing copies the issuer's ID layout into this config, and the two must then stay in step.
 
 The SPIFFE spec fixes the ID's syntax, not what its path means.
 Each issuer picks its own layout. So you describe it: one entry per layout, each with
@@ -569,25 +576,35 @@ policies:
 
 ### Example 6: workload identity through a token broker
 
-The callers are agents running under cloud IAM roles, not people.
+The callers are workloads and people under cloud IAM roles.
 The cloud's own issuer lets the requester add claims, so it cannot be trusted for roles.
 A token broker verifies the cloud token and issues its own:
 
-- `sub` is a SPIFFE ID built from the caller's IAM role.
-- The role and projects come from the broker's own mapping for that IAM role.
-- The caller cannot choose any of them.
+- `sub` is a SPIFFE ID built from the caller's IAM role. It identifies the caller.
+- `o11y.role` is a policy name the broker maps each IAM role to, like `sre` or `pg-host`.
+- `o11y.projects` and `o11y.regions` scope what the caller may see.
+- The broker sets all of them from its own config. The caller cannot choose any.
+
+Why map roles in the broker, not in the proxy:
+
+- IAM role names repeat across accounts. SSO role names carry a suffix that differs per account.
+- The broker maps each one to a stable name. Policies here only ever see `sre` or `pg-host`.
+- A change to who gets which role is reviewed in one place, next to the IAM roles.
 
 **Token claims**
+
+A database host, scoped to its own project and region:
 
 ```json
 {
   "iss": "https://broker.example.com",
-  "aud": "o11y-proxy",
-  "sub": "spiffe://broker.example.com/aws/111122223333/ap-southeast-1/role/metrics-reader",
+  "aud": ["o11y-proxy"],
+  "sub": "spiffe://broker.example.com/aws/111122223333/ap-southeast-1/role/pg-host",
   "exp": 1790000000,
   "o11y": {
-    "role": "metrics-reader",
-    "projects": ["acme-web", "acme-api"]
+    "role": "pg-host",
+    "projects": ["abcdefghijklmnop"],
+    "regions": ["ap-southeast-1"]
   }
 }
 ```
@@ -605,27 +622,61 @@ server:
     identity_claim: sub                  # the default
 
 policies:
-  metrics-reader:
-    sources: [prod_metrics]
+  sre:
+    sources: "*"
+  pg-host:
+    sources: [app_logs, prod_metrics]
+    max_lookback: 7d
     constraints:
-      - field: labels.project
+      - sources: [prod_metrics]
+        field: labels.project
         inject: true
         allowed_claim: o11y.projects
+      - sources: [app_logs]
+        field: attributes.project_ref
+        inject: true
+        allowed_claim: o11y.projects
+      - sources: [prod_metrics]
+        field: labels.region
+        inject: true
+        allowed_claim: o11y.regions
 ```
+
+Each backend names the project field differently. So there is one constraint per source.
 
 **What happens**
 
 - The caller's identity is the SPIFFE ID. It names an IAM role, not a person.
   Access can be traced to a role, not to a human.
-- `metrics-reader` matches. The caller sees only `prod_metrics`.
-- A query with no project filter gets `labels.project in [acme-web, acme-api]` added.
-- `labels.project eq other-co`: `403`.
-- Moving the IAM role to another account or region changes the `sub`.
-  Only the broker's mapping needs to follow. The proxy config stays the same.
+- `pg-host` matches. The caller sees `app_logs` and `prod_metrics` only.
+- A `prod_metrics` query gets `labels.project = abcdefghijklmnop` and `labels.region = ap-southeast-1` added.
+- An `app_logs` query gets `attributes.project_ref = abcdefghijklmnop` added.
+- `labels.project eq other-project`: `403`.
+- A `pg-host` token with no `projects` claim: every query on both sources gets `403`.
+  A missing claim allows no values. It never allows all of them.
+- An `sre` token has no constraints. It sees every source.
+
+**Setting these claims in the broker**
+
+- **Make the role required** in the broker's own schema.
+  A mapping without one is then caught in the broker, not as a `403` here.
+  And leave `default_policy` unset, so every caller has a role on purpose.
+- **Every role that a policy constrains must carry the claim.**
+  Every `pg-host` mapping needs `projects`. `sre` needs none.
+- **Literal values are safest.** The broker writes `sre`, and nothing else can change it.
+- **Values copied from the cloud token are fine when the cloud sets them.**
+  The region of the endpoint the caller used is one.
+  It fits regional workloads. It does not fit people, who may ask from any region.
+- **Values from IAM tags are fine when admins set them.**
+  AWS session tags are not, if the caller may set them when assuming the role (`sts:TagSession`).
+  Then the caller picks its own project.
+- **Values must match the data exactly.** They are compared as strings.
+  `ap-southeast-1` in the token does not match `apse1` in the data.
 
 **If the broker sets only `sub`**
 
-Read the role out of the SPIFFE ID instead. See [SPIFFE IDs as roles](#spiffe-ids-as-roles).
+Prefer a role claim from the broker, as above. If it cannot set one,
+read the role out of the SPIFFE ID instead. See [SPIFFE IDs as roles](#spiffe-ids-as-roles).
 
 ```yaml
 server:
