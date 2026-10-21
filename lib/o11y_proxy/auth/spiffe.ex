@@ -1,38 +1,45 @@
 defmodule O11yProxy.Auth.SPIFFE do
   @moduledoc """
-  Derives role names from a SPIFFE ID claim (`spiffe://trust-domain/path`), for issuers
+  Derives policy names from a SPIFFE ID claim (`spiffe://trust-domain/path`), for issuers
   whose `sub` names a workload rather than carrying a role claim of its own.
 
   The SPIFFE spec fixes the ID's syntax but says the path's meaning is "the
   responsibility of the administrator to define". So nothing here knows any issuer's
-  layout. The config supplies it as a schema, in two parts:
+  layout. The config supplies it as a schema: a list of paths, each a pattern plus the
+  policy names an ID matching it may hold.
 
-    * `paths` — patterns such as `/aws/{account}/*/role/{role}`. A literal segment
-      matches itself, `*` matches any one segment, and `{name}` captures one segment
-      under that name. An issuer that emits several layouts gets one pattern each.
-    * `policy_names` — templates such as `"{account}/{role}"`, filled from the captures
-      and tried in order; the first that names a policy wins. A template using a name
-      the matched pattern did not capture is skipped, so a layout without a segment
-      falls through to the templates that do not need it.
+    * A pattern such as `/aws/{account}/*/role/{role}` matches one segment per element:
+      a literal matches itself, `*` any one segment, and `{name}` any one segment,
+      captured under that name.
+    * Its `policy_names`, such as `"{account}/{role}"`, are filled from the captures and
+      tried in order; the first that names a policy wins.
+
+  Policy names are one namespace, and a captured segment is chosen by whoever named the
+  workload. So compiling refuses any schema in which two different templates could
+  produce the same name — otherwise a role named `111122223333-admin` in one account
+  could fill `{role}` and land on the policy `{account}-{role}` meant for another, or a
+  Kubernetes service account named `sre` could land on the AWS role's policy. The one
+  exception is the *same* template text under several patterns, which is how one issuer's
+  alternative layouts (with and without a region, say) say they mean the same thing.
 
   Capture names stay strings throughout: they come from config, and atoms are never
   garbage collected. Pure: no token, no issuer, nothing booted.
   """
 
-  @enforce_keys [:trust_domain, :patterns, :policy_names]
-  defstruct [:trust_domain, :patterns, :policy_names]
+  @enforce_keys [:trust_domain, :paths]
+  defstruct [:trust_domain, :paths]
 
   @typedoc "A compiled path pattern: one element per segment."
   @type pattern :: [{:literal, String.t()} | :any | {:capture, String.t()}]
 
-  @typedoc "A compiled `policy_names` entry: literal text and captures, in order."
-  @type template :: [String.t() | {:capture, String.t()}]
+  @typedoc """
+  A compiled `policy_names` entry, as tokens: maximal runs of segment characters
+  (`:segment`) and of anything else (`:other`), with each capture standing for one whole
+  segment-character run. That shape is what makes overlap between templates decidable.
+  """
+  @type template :: [{:segment | :other, String.t()} | {:capture, String.t()}]
 
-  @type t :: %__MODULE__{
-          trust_domain: String.t(),
-          patterns: [pattern()],
-          policy_names: [template()]
-        }
+  @type t :: %__MODULE__{trust_domain: String.t(), paths: [{pattern(), [template()]}]}
 
   # The spec requires support for IDs up to 2048 bytes, and a signed claim is still no
   # reason to walk an unbounded string.
@@ -40,17 +47,17 @@ defmodule O11yProxy.Auth.SPIFFE do
   @max_trust_domain_bytes 255
 
   @doc """
-  Compiles the `server.oidc.spiffe` block. Fails with a message on anything that could
-  never match: a bad trust domain or pattern, a template needing a capture no pattern
-  makes, or a pattern that fills no template. A typo fails at boot, not as a `403`.
+  Compiles the `server.oidc.spiffe` block from its trust domain and a list of
+  `{pattern, policy_names}`. Refuses anything that could never match, and any two
+  templates that could produce the same name, so a mistake fails at boot, not as a
+  `403` or as the wrong policy.
   """
-  @spec compile(String.t(), [String.t()], [String.t()]) :: {:ok, t()} | {:error, String.t()}
-  def compile(trust_domain, paths, policy_names) do
+  @spec compile(String.t(), [{String.t(), [String.t()]}]) :: {:ok, t()} | {:error, String.t()}
+  def compile(trust_domain, paths) do
     with :ok <- check_trust_domain(trust_domain),
-         {:ok, patterns} <- compile_all(paths, "paths", &compile_path/1),
-         {:ok, templates} <- compile_all(policy_names, "policy_names", &compile_template/1),
-         :ok <- check_coverage(paths, patterns, policy_names, templates) do
-      {:ok, %__MODULE__{trust_domain: trust_domain, patterns: patterns, policy_names: templates}}
+         {:ok, compiled} <- compile_paths(paths),
+         :ok <- check_disjoint(paths, compiled) do
+      {:ok, %__MODULE__{trust_domain: trust_domain, paths: compiled}}
     end
   end
 
@@ -63,19 +70,28 @@ defmodule O11yProxy.Auth.SPIFFE do
            "letters, digits, dots, dashes and underscores only, no scheme or path"}
   end
 
-  defp compile_all([], key, _compile), do: {:error, "#{key} needs at least one entry"}
+  defp compile_paths([]), do: {:error, "paths needs at least one entry"}
 
-  defp compile_all(entries, key, compile) do
-    entries
-    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
-      case compile.(entry) do
-        {:ok, compiled} -> {:cont, {:ok, [compiled | acc]}}
-        {:error, message} -> {:halt, {:error, "#{key} entry #{inspect(entry)} #{message}"}}
+  defp compile_paths(paths) do
+    paths
+    |> Enum.reduce_while({:ok, []}, fn {source, names}, {:ok, acc} ->
+      case compile_entry(source, names) do
+        {:ok, entry} -> {:cont, {:ok, [entry | acc]}}
+        {:error, message} -> {:halt, {:error, "paths entry #{inspect(source)} #{message}"}}
       end
     end)
     |> case do
       {:ok, compiled} -> {:ok, Enum.reverse(compiled)}
       error -> error
+    end
+  end
+
+  defp compile_entry(_source, []), do: {:error, "needs at least one policy_names entry"}
+
+  defp compile_entry(source, names) do
+    with {:ok, pattern} <- compile_path(source),
+         {:ok, templates} <- compile_templates(names, captures(pattern), []) do
+      {:ok, {pattern, templates}}
     end
   end
 
@@ -119,16 +135,46 @@ defmodule O11yProxy.Auth.SPIFFE do
 
   # -- policy_names templates ------------------------------------------------------------
 
-  defp compile_template(""), do: {:error, "is empty"}
-  defp compile_template(template), do: template_parts(template, [])
+  defp compile_templates([], _captured, acc), do: {:ok, Enum.reverse(acc)}
 
-  defp template_parts(<<>>, acc), do: {:ok, Enum.reverse(acc)}
+  defp compile_templates([source | rest], captured, acc) do
+    case compile_template(source, captured) do
+      {:ok, template} -> compile_templates(rest, captured, [template | acc])
+      {:error, message} -> {:error, "policy_names entry #{inspect(source)} #{message}"}
+    end
+  end
 
-  defp template_parts(<<"{", rest::binary>>, acc) do
+  defp compile_template("", _captured), do: {:error, "is empty"}
+
+  defp compile_template(source, captured) do
+    with true <- String.valid?(source) || {:error, "is not valid UTF-8"},
+         {:ok, template} <- template_tokens(source, []),
+         [] <- captures(template) -- captured,
+         true <- separated?(template) do
+      {:ok, template}
+    else
+      [name | _] ->
+        {:error, "uses {#{name}}, which this pattern does not capture"}
+
+      false ->
+        {:error,
+         "puts a {name} next to a letter, digit, ., - or _, or next to another {name}. " <>
+           "Those can be part of the captured segment, so two different IDs could fill " <>
+           "it to the same policy name; separate each {name} with a character no " <>
+           "segment can hold, such as / or :"}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp template_tokens(<<>>, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp template_tokens("{" <> rest, acc) do
     case :binary.split(rest, "}") do
       [name, rest] ->
         if name?(name),
-          do: template_parts(rest, [{:capture, name} | acc]),
+          do: template_tokens(rest, [{:capture, name} | acc]),
           else: {:error, "has {#{name}}, which is not a valid {name}"}
 
       [_unclosed] ->
@@ -136,46 +182,80 @@ defmodule O11yProxy.Auth.SPIFFE do
     end
   end
 
-  defp template_parts(<<"}", _rest::binary>>, _acc), do: {:error, "has a } with no opening {"}
+  defp template_tokens("}" <> _rest, _acc), do: {:error, "has a } with no opening {"}
 
-  defp template_parts(<<c::utf8, rest::binary>>, [text | acc]) when is_binary(text),
-    do: template_parts(rest, [text <> <<c::utf8>> | acc])
+  defp template_tokens(text, acc) do
+    {literal, rest} =
+      case :binary.match(text, ["{", "}"]) do
+        :nomatch -> {text, ""}
+        {at, _length} -> :erlang.split_binary(text, at)
+      end
 
-  defp template_parts(<<c::utf8, rest::binary>>, acc),
-    do: template_parts(rest, [<<c::utf8>> | acc])
+    template_tokens(rest, Enum.reverse(runs(literal), acc))
+  end
 
-  defp template_parts(_invalid, _acc), do: {:error, "is not valid UTF-8"}
+  # Splits text into maximal runs of segment characters and of everything else.
+  defp runs(text) do
+    text
+    |> String.codepoints()
+    |> Enum.chunk_by(&segment_chars?/1)
+    |> Enum.map(fn chars ->
+      run = Enum.join(chars)
+      if segment_chars?(run), do: {:segment, run}, else: {:other, run}
+    end)
+  end
 
-  defp needs(template), do: for({:capture, name} <- template, do: name)
+  # Text runs are maximal by construction, so two segment-like tokens in a row can only
+  # be a capture touching segment text, or two captures touching.
+  defp separated?([]), do: true
+  defp separated?([_last]), do: true
+  defp separated?([{:other, _}, next | rest]), do: separated?([next | rest])
+  defp separated?([_segment_like, {:other, _} = next | rest]), do: separated?([next | rest])
+  defp separated?(_touching), do: false
 
-  # A template can only be filled by a pattern capturing every name it uses.
-  defp fills?(pattern, template), do: needs(template) -- captures(pattern) == []
+  # -- overlap ---------------------------------------------------------------------------
 
-  defp check_coverage(paths, patterns, names, templates) do
-    unfillable =
-      for {name, template} <- Enum.zip(names, templates),
-          not Enum.any?(patterns, &fills?(&1, template)),
-          do: name
+  defp check_disjoint(paths, compiled) do
+    sourced =
+      for {{_pattern, sources}, {_compiled, templates}} <- Enum.zip(paths, compiled),
+          pair <- Enum.zip(sources, templates),
+          uniq: true,
+          do: pair
 
-    useless =
-      for {path, pattern} <- Enum.zip(paths, patterns),
-          not Enum.any?(templates, &fills?(pattern, &1)),
-          do: path
+    # `a < b` visits each pair of distinct template texts once; equal texts are the
+    # allowed "same meaning in several layouts" case, and compile identically.
+    clashes = for {a, ta} <- sourced, {b, tb} <- sourced, a < b and overlap?(ta, tb), do: {a, b}
 
-    case {unfillable, useless} do
-      {[], []} ->
+    case clashes do
+      [] ->
         :ok
 
-      {[name | _], _} ->
+      [{a, b} | _] ->
         {:error,
-         "policy_names entry #{inspect(name)} uses a {name} that no path captures, so it " <>
-           "can never be filled"}
-
-      {[], [path | _]} ->
-        {:error,
-         "paths entry #{inspect(path)} fills no policy_names entry, since each uses a " <>
-           "{name} it does not capture, so an ID matching it can never get a policy"}
+         "policy_names entries #{inspect(a)} and #{inspect(b)} can produce the same " <>
+           "policy name from different IDs. Make them differ in their fixed text, e.g. " <>
+           "with a prefix such as aws: or k8s:, or use the same template in both places " <>
+           "if they mean the same thing"}
     end
+  end
+
+  # Whether two token lists can produce one string. A capture is exactly one whole
+  # segment run, so it lines up with a capture or a segment literal, never with `:other`.
+  defp overlap?([], []), do: true
+  defp overlap?([token | a], [token | b]), do: overlap?(a, b)
+  defp overlap?([{:capture, _} | a], [{:capture, _} | b]), do: overlap?(a, b)
+  defp overlap?([{:capture, _} | a], [{:segment, _} | b]), do: overlap?(a, b)
+  defp overlap?([{:segment, _} | a], [{:capture, _} | b]), do: overlap?(a, b)
+  defp overlap?(_a, _b), do: false
+
+  @doc """
+  Whether some ID could ever be given `name` under `spiffe`. A policy no template can
+  produce is unreachable, which config treats as a typo.
+  """
+  @spec produces?(t(), String.t()) :: boolean()
+  def produces?(%__MODULE__{paths: paths}, name) do
+    tokens = runs(name)
+    Enum.any?(paths, fn {_pattern, templates} -> Enum.any?(templates, &overlap?(&1, tokens)) end)
   end
 
   # -- IDs -------------------------------------------------------------------------------
@@ -203,21 +283,20 @@ defmodule O11yProxy.Auth.SPIFFE do
   def parse(_id), do: :error
 
   @doc """
-  The policy names `id` yields under `spiffe`, in `policy_names` order.
+  The policy names `id` yields under `spiffe`, in its path's `policy_names` order.
 
-  `{:none, reason}` is an ID that yields no role — invalid, from another trust domain, or
-  matching no pattern — which is a caller with no role, not a broken token. `{:error, _}`
-  is two patterns matching one ID with different results: a config that is ambiguous
-  for this ID, refused rather than resolved by picking one.
+  `{:none, reason}` is an ID that yields no names — invalid, from another trust domain,
+  or matching no pattern — which is a caller with no role, not a broken token.
+  `{:error, _}` is two patterns matching one ID with different names: a config that is
+  ambiguous for this ID, refused rather than resolved by picking one.
   """
-  @spec roles(t(), term()) ::
+  @spec roles(t(), String.t()) ::
           {:ok, [String.t(), ...]} | {:none, String.t()} | {:error, String.t()}
-  def roles(%__MODULE__{trust_domain: domain} = spiffe, id) do
+  def roles(%__MODULE__{trust_domain: domain, paths: paths}, id) do
     case parse(id) do
       {:ok, ^domain, segments} ->
-        spiffe.patterns
-        |> Enum.flat_map(&match(&1, segments, %{}))
-        |> Enum.map(&fill_all(spiffe.policy_names, &1))
+        paths
+        |> Enum.flat_map(&names_for(&1, segments))
         |> Enum.uniq()
         |> one_result()
 
@@ -229,13 +308,15 @@ defmodule O11yProxy.Auth.SPIFFE do
     end
   end
 
-  # Compared on the names produced, not the captures: two layouts that agree on every
-  # policy name are not ambiguous in any way that matters.
+  defp names_for({pattern, templates}, segments) do
+    for captures <- match(pattern, segments, %{}), do: fill_all(templates, captures)
+  end
+
   defp one_result([]), do: {:none, "matches no configured path pattern"}
   defp one_result([names]), do: {:ok, names}
 
   defp one_result(_several),
-    do: {:error, "matches more than one path pattern, with different results"}
+    do: {:error, "matches more than one path pattern, with different policy names"}
 
   # Binding `segment` twice in one head is the equality check for a literal.
   defp match([], [], captures), do: [captures]
@@ -250,20 +331,17 @@ defmodule O11yProxy.Auth.SPIFFE do
 
   defp match(_pattern, _segments, _acc), do: []
 
+  # Compiling checked every template's captures against its own pattern, so each fills.
   defp fill_all(templates, captures) do
-    templates |> Enum.flat_map(&fill(&1, captures, [])) |> Enum.uniq()
+    templates
+    |> Enum.map(fn template ->
+      Enum.map_join(template, fn
+        {:capture, name} -> Map.fetch!(captures, name)
+        {_kind, text} -> text
+      end)
+    end)
+    |> Enum.uniq()
   end
-
-  defp fill([], _captures, acc), do: [acc |> Enum.reverse() |> IO.iodata_to_binary()]
-
-  defp fill([{:capture, name} | rest], captures, acc) do
-    case captures do
-      %{^name => value} -> fill(rest, captures, [value | acc])
-      _missing -> []
-    end
-  end
-
-  defp fill([text | rest], captures, acc), do: fill(rest, captures, [text | acc])
 
   # -- character classes -----------------------------------------------------------------
 
@@ -283,13 +361,16 @@ defmodule O11yProxy.Auth.SPIFFE do
   defp segment?(segment) when segment in ["", ".", ".."], do: false
   defp segment?(segment), do: segment_chars?(segment)
 
-  defp segment_chars?(<<>>), do: true
+  defp segment_chars?(""), do: false
+  defp segment_chars?(text), do: all_segment_chars?(text)
 
-  defp segment_chars?(<<c, rest::binary>>)
+  defp all_segment_chars?(<<>>), do: true
+
+  defp all_segment_chars?(<<c, rest::binary>>)
        when c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c in [?., ?-, ?_],
-       do: segment_chars?(rest)
+       do: all_segment_chars?(rest)
 
-  defp segment_chars?(_other), do: false
+  defp all_segment_chars?(_other), do: false
 
   defp name?(<<?_, rest::binary>>), do: name_chars?(rest)
   defp name?(<<c, rest::binary>>) when c in ?a..?z, do: name_chars?(rest)

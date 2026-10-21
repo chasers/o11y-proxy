@@ -81,9 +81,17 @@ defmodule O11yProxy.Config do
       doc: "the trust domain a role_claim SPIFFE ID must be in, e.g. example.org"
     ],
     paths: [
-      type: {:list, :string},
+      type: {:list, :any},
       required: true,
-      doc: "path patterns such as /aws/{account}/*/role/{role}; see O11yProxy.Auth.SPIFFE"
+      doc: "one entry per ID layout, each a pattern and its policy_names"
+    ]
+  ]
+
+  @spiffe_path_schema [
+    pattern: [
+      type: :string,
+      required: true,
+      doc: "an ID path such as /aws/{account}/*/role/{role}; see O11yProxy.Auth.SPIFFE"
     ],
     policy_names: [
       type: {:list, :string},
@@ -238,7 +246,14 @@ defmodule O11yProxy.Config do
   defp build_oidc(nil), do: {:ok, nil}
 
   defp build_oidc(raw) do
-    {spiffe_raw, raw} = if is_map(raw), do: Map.pop(raw, "spiffe"), else: {nil, raw}
+    # Fetched rather than popped-with-default: a `spiffe:` key whose children are all
+    # commented out is YAML null, and reading that as "not configured" would quietly turn
+    # the role claim back into a literal role name.
+    {spiffe_raw, raw} =
+      case is_map(raw) && Map.fetch(raw, "spiffe") do
+        {:ok, value} -> {{:set, value}, Map.delete(raw, "spiffe")}
+        _ -> {:unset, raw}
+      end
 
     with {:ok, oidc} <- validate_block(raw, @oidc_schema, "server.oidc"),
          {:ok, spiffe} <- build_spiffe(spiffe_raw) do
@@ -247,14 +262,33 @@ defmodule O11yProxy.Config do
     end
   end
 
-  defp build_spiffe(nil), do: {:ok, nil}
+  defp build_spiffe(:unset), do: {:ok, nil}
 
-  defp build_spiffe(raw) do
-    with {:ok, opts} <- validate_block(raw, @spiffe_schema, "server.oidc.spiffe") do
-      case SPIFFE.compile(opts[:trust_domain], opts[:paths], opts[:policy_names]) do
-        {:ok, spiffe} -> {:ok, spiffe}
-        {:error, message} -> {:error, {:invalid_block, "server.oidc.spiffe", message}}
+  defp build_spiffe({:set, raw}) do
+    with {:ok, opts} <- validate_block(raw, @spiffe_schema, "server.oidc.spiffe"),
+         {:ok, paths} <- spiffe_paths(opts[:paths]),
+         {:ok, spiffe} <- SPIFFE.compile(opts[:trust_domain], paths) do
+      {:ok, spiffe}
+    else
+      {:error, message} when is_binary(message) ->
+        {:error, {:invalid_block, "server.oidc.spiffe", message}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp spiffe_paths(entries) do
+    entries
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+      case validate_block(entry, @spiffe_path_schema, "server.oidc.spiffe.paths") do
+        {:ok, opts} -> {:cont, {:ok, [{opts[:pattern], opts[:policy_names]} | acc]}}
+        error -> {:halt, error}
       end
+    end)
+    |> case do
+      {:ok, paths} -> {:ok, Enum.reverse(paths)}
+      error -> error
     end
   end
 
@@ -311,15 +345,15 @@ defmodule O11yProxy.Config do
           "auth: oidc needs at least one policy. For \"any valid token may query " <>
             "everything\", define one with sources: \"*\" and name it as default_policy."}}
 
-      is_nil(Map.get(oidc, :role_claim)) and is_nil(default) ->
-        {:error,
-         {:invalid_block, "server.oidc",
-          "set role_claim, default_policy, or both, so a token can be mapped to a policy"}}
-
       Map.has_key?(oidc, :spiffe) and is_nil(Map.get(oidc, :role_claim)) ->
         {:error,
          {:invalid_block, "server.oidc",
           "spiffe: reads its SPIFFE ID from role_claim, so set role_claim (usually sub)"}}
+
+      is_nil(Map.get(oidc, :role_claim)) and is_nil(default) ->
+        {:error,
+         {:invalid_block, "server.oidc",
+          "set role_claim, default_policy, or both, so a token can be mapped to a policy"}}
 
       not is_nil(default) and not Map.has_key?(policies, default) ->
         {:error,
@@ -328,9 +362,38 @@ defmodule O11yProxy.Config do
             "(defined: #{defined})"}}
 
       true ->
-        :ok
+        check_reachable(oidc, policies)
     end
   end
+
+  # With spiffe:, a policy is selected only by a filled-in policy_names template or as
+  # the default. One that no template can produce is dead config — a typo like
+  # `111122223333:sre` for `{account}/{role}` — and would never show up as an error, just
+  # as callers quietly getting a different policy. A typo that still fits some template
+  # (`111122223333_sre` fits `{role}`) cannot be told apart from a real name, and that is
+  # the case the docs' advice to keep role-only policies small is for.
+  defp check_reachable(%{spiffe: spiffe} = oidc, policies) do
+    default = Map.get(oidc, :default_policy)
+
+    unreachable =
+      for name <- Enum.sort(Map.keys(policies)),
+          name != default and not SPIFFE.produces?(spiffe, name),
+          do: name
+
+    case unreachable do
+      [] ->
+        :ok
+
+      names ->
+        {:error,
+         {:invalid_block, :policies,
+          "no spiffe policy_names template can produce #{Enum.map_join(names, ", ", &inspect/1)}, " <>
+            "so no token could ever be given it. Rename it to match a template, or make it " <>
+            "the default_policy."}}
+    end
+  end
+
+  defp check_reachable(_oidc, _policies), do: :ok
 
   defp loopback?({127, _, _, _}), do: true
   defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true

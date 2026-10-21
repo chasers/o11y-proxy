@@ -5,16 +5,15 @@ defmodule O11yProxy.Auth.SPIFFETest do
 
   @domain "mint.example.com"
   @prefix "spiffe://mint.example.com"
-  @aws ["/aws/{account}/*/role/{role}"]
-  @account_then_role ["{account}/{role}", "{role}"]
+  @aws {"/aws/{account}/*/role/{role}", ["{account}/{role}", "{role}"]}
 
-  defp spiffe!(paths, policy_names) do
-    {:ok, spiffe} = SPIFFE.compile(@domain, paths, policy_names)
+  defp spiffe!(paths) do
+    {:ok, spiffe} = SPIFFE.compile(@domain, paths)
     spiffe
   end
 
-  defp compile_error(paths, policy_names) do
-    assert {:error, message} = SPIFFE.compile(@domain, paths, policy_names)
+  defp compile_error(paths) do
+    assert {:error, message} = SPIFFE.compile(@domain, paths)
     message
   end
 
@@ -63,10 +62,12 @@ defmodule O11yProxy.Auth.SPIFFETest do
     end
   end
 
-  describe "compile/3" do
-    test "compiles literals, wildcards, captures and templates" do
-      assert {:ok, %SPIFFE{trust_domain: @domain, patterns: [pattern], policy_names: names}} =
-               SPIFFE.compile(@domain, @aws, ["{account}/{role}", "role-{role}"])
+  describe "compile/2" do
+    test "compiles literals, wildcards and captures, and tokenizes templates" do
+      assert {:ok, %SPIFFE{trust_domain: @domain, paths: [{pattern, templates}]}} =
+               SPIFFE.compile(@domain, [
+                 {"/aws/{account}/*/role/{role}", ["{account}/{role}", "role:{role}"]}
+               ])
 
       assert pattern == [
                {:literal, "aws"},
@@ -76,27 +77,29 @@ defmodule O11yProxy.Auth.SPIFFETest do
                {:capture, "role"}
              ]
 
-      assert names == [
-               [{:capture, "account"}, "/", {:capture, "role"}],
-               ["role-", {:capture, "role"}]
+      assert templates == [
+               [{:capture, "account"}, {:other, "/"}, {:capture, "role"}],
+               [{:segment, "role"}, {:other, ":"}, {:capture, "role"}]
              ]
     end
 
     test "takes any lowercase capture name, and keeps it a string" do
-      assert {:ok, %SPIFFE{patterns: [[_, {:capture, "service_account2"}]]}} =
-               SPIFFE.compile(@domain, ["/ns/{service_account2}"], ["{service_account2}"])
+      assert {:ok, %SPIFFE{paths: [{[_, {:capture, "service_account2"}], _}]}} =
+               SPIFFE.compile(@domain, [{"/ns/{service_account2}", ["{service_account2}"]}])
+
+      assert {:ok, _} = SPIFFE.compile(@domain, [{"/{_x}", ["{_x}"]}])
     end
 
     test "refuses a trust domain that no valid ID could carry" do
       for domain <- ["", "Mint.example.com", "spiffe://mint.example.com", "mint.example.com/x"] do
-        assert {:error, message} = SPIFFE.compile(domain, ["/{role}"], ["{role}"])
+        assert {:error, message} = SPIFFE.compile(domain, [{"/{role}", ["{role}"]}])
         assert message =~ "trust_domain"
       end
     end
 
-    test "needs at least one path and one policy name" do
-      assert compile_error([], ["{role}"]) =~ "paths needs at least one entry"
-      assert compile_error(["/{role}"], []) =~ "policy_names needs at least one entry"
+    test "needs at least one path, and at least one policy name per path" do
+      assert compile_error([]) =~ "paths needs at least one entry"
+      assert compile_error([{"/{role}", []}]) =~ "needs at least one policy_names entry"
     end
 
     test "refuses path patterns no ID could match" do
@@ -112,13 +115,13 @@ defmodule O11yProxy.Auth.SPIFFETest do
             "/{role",
             "/x{role}"
           ] do
-        assert compile_error([path], ["{role}"]) =~ inspect(path),
+        assert compile_error([{path, ["{role}"]}]) =~ inspect(path),
                "expected #{inspect(path)} to be refused"
       end
     end
 
     test "refuses a pattern capturing one name twice" do
-      assert compile_error(["/{role}/{role}"], ["{role}"]) =~ "captures {role} more than once"
+      assert compile_error([{"/{role}/{role}", ["{role}"]}]) =~ "captures {role} more than once"
     end
 
     test "refuses malformed templates" do
@@ -127,76 +130,145 @@ defmodule O11yProxy.Auth.SPIFFETest do
             {"{role", "no closing }"},
             {"role}", "no opening {"},
             {"{Role}", "not a valid {name}"},
-            {"{}", "not a valid {name}"}
+            {"{}", "not a valid {name}"},
+            {<<0xFF>>, "not valid UTF-8"}
           ] do
-        assert compile_error(["/{role}"], [template]) =~ complaint
+        assert compile_error([{"/{role}", [template]}]) =~ complaint
       end
     end
 
-    test "refuses a template that no pattern can fill" do
-      message = compile_error(@aws, ["{account}/{region}/{role}", "{role}"])
-      assert message =~ ~s("{account}/{region}/{role}")
-      assert message =~ "no path captures"
+    test "refuses a template using a name its own pattern does not capture" do
+      message = compile_error([{"/aws/{account}/*/role/{role}", ["{region}/{role}"]}])
+      assert message =~ ~s("{region}/{role}")
+      assert message =~ "does not capture"
     end
 
-    test "refuses a pattern that fills no template" do
-      message = compile_error(["/aws/{account}/*/role/{role}", "/k8s/{sa}"], ["{role}"])
-      assert message =~ ~s("/k8s/{sa}")
-      assert message =~ "fills no policy_names entry"
+    test "refuses a {name} touching segment characters or another {name}" do
+      # Each of these lets two different IDs fill the template to one name: a role named
+      # "111122223333-admin" in any account fills {role} to the pinned name.
+      for template <- [
+            "{account}-{role}",
+            "{account}.{role}",
+            "{account}{role}",
+            "x{role}",
+            "{role}_x"
+          ] do
+        message = compile_error([{"/{account}/{role}", [template, "{role}"]}])
+        assert message =~ "separate each {name}", "expected #{inspect(template)} to be refused"
+      end
     end
 
-    test "accepts a template that only some patterns fill" do
+    test "accepts separators no segment can hold" do
+      for template <- [
+            "{account}/{role}",
+            "{account}:{role}",
+            "aws:{role}",
+            "{role}@prod",
+            "{a} {b}"
+          ] do
+        assert {:ok, _} = SPIFFE.compile(@domain, [{"/{account}/{role}/{a}/{b}", [template]}]),
+               "expected #{inspect(template)} to be accepted"
+      end
+    end
+
+    test "refuses two templates that can produce the same name" do
+      for {left, right} <- [
+            # a role-only name colliding with a fixed one
+            {{"/aws/{account}/*/role/{role}", ["{role}"]}, {"/ns/prod/sa/admin", ["admin"]}},
+            # two layouts sharing a namespace under different names
+            {@aws, {"/ns/{namespace}/sa/{sa}", ["{namespace}/{sa}"]}},
+            {@aws, {"/ns/*/sa/{sa}", ["{sa}"]}},
+            # within one path, two captures in the same position
+            {{"/{a}/{b}", ["{a}"]}, {"/{a}/{b}/x", ["{b}"]}}
+          ] do
+        assert compile_error([left, right]) =~ "can produce the same policy name"
+      end
+
+      assert compile_error([{"/{a}/{b}", ["{a}", "{b}"]}]) =~ "can produce the same policy name"
+    end
+
+    test "accepts templates kept apart by fixed text" do
       assert {:ok, _} =
-               SPIFFE.compile(
-                 @domain,
-                 ["/aws/{account}/{region}/role/{role}", "/aws/{account}/role/{role}"],
-                 ["{account}/{region}/{role}", "{account}/{role}"]
-               )
+               SPIFFE.compile(@domain, [
+                 @aws,
+                 {"/ns/{namespace}/sa/{sa}", ["k8s:{namespace}/{sa}", "k8s:{sa}"]},
+                 {"/ns/prod/sa/admin", ["pinned:admin"]}
+               ])
+    end
+
+    test "accepts the same template text under several patterns" do
+      assert {:ok, _} =
+               SPIFFE.compile(@domain, [
+                 {"/aws/{account}/{region}/role/{role}", ["{account}/{role}", "{role}"]},
+                 {"/aws/{account}/role/{role}", ["{account}/{role}", "{role}"]}
+               ])
+    end
+  end
+
+  describe "produces?/2" do
+    test "is true only for names some template can produce" do
+      spiffe = spiffe!([@aws])
+
+      assert SPIFFE.produces?(spiffe, "111122223333/sre")
+      assert SPIFFE.produces?(spiffe, "sre")
+      refute SPIFFE.produces?(spiffe, "111122223333/")
+      refute SPIFFE.produces?(spiffe, "a/b/c")
+      refute SPIFFE.produces?(spiffe, "role:sre")
+      refute SPIFFE.produces?(spiffe, "")
+    end
+
+    test "matches fixed text exactly" do
+      spiffe = spiffe!([{"/ns/*/sa/{sa}", ["k8s:{sa}"]}])
+
+      assert SPIFFE.produces?(spiffe, "k8s:ingest")
+      refute SPIFFE.produces?(spiffe, "ingest")
+      refute SPIFFE.produces?(spiffe, "k8s:")
     end
   end
 
   describe "roles/2" do
-    test "fills the templates in order from the captures" do
-      spiffe = spiffe!(@aws, @account_then_role)
+    test "fills the path's templates in order from the captures" do
+      spiffe = spiffe!([@aws])
       id = @prefix <> "/aws/111122223333/ap-southeast-1/role/metrics-writer"
 
       assert {:ok, ["111122223333/metrics-writer", "metrics-writer"]} = SPIFFE.roles(spiffe, id)
     end
 
     test "follows the configured order, not specificity" do
-      spiffe = spiffe!(@aws, ["{role}", "{account}/{role}"])
+      spiffe = spiffe!([{"/aws/{account}/*/role/{role}", ["{role}", "{account}/{role}"]}])
 
       assert {:ok, ["sre", "111122223333/sre"]} =
                SPIFFE.roles(spiffe, @prefix <> "/aws/111122223333/eu-west-1/role/sre")
     end
 
-    test "skips a template whose capture the matched pattern did not make" do
-      spiffe =
-        spiffe!(
-          ["/aws/{account}/{region}/role/{role}", "/aws/{account}/role/{role}"],
-          ["{account}/{region}/{role}", "{account}/{role}", "{role}"]
-        )
+    test "uses only the matched path's own templates" do
+      spiffe = spiffe!([@aws, {"/ns/*/sa/{sa}", ["k8s:{sa}"]}])
 
-      assert {:ok, ["1111/eu-west-1/sre", "1111/sre", "sre"]} =
+      assert {:ok, ["k8s:sre"]} = SPIFFE.roles(spiffe, @prefix <> "/ns/default/sa/sre")
+    end
+
+    test "maps alternative layouts of one issuer to the same names" do
+      spiffe =
+        spiffe!([
+          {"/aws/{account}/{region}/role/{role}", ["{account}/{role}", "{role}"]},
+          {"/aws/{account}/role/{role}", ["{account}/{role}", "{role}"]}
+        ])
+
+      assert {:ok, ["1111/sre", "sre"]} =
                SPIFFE.roles(spiffe, @prefix <> "/aws/1111/eu-west-1/role/sre")
 
       assert {:ok, ["1111/sre", "sre"]} = SPIFFE.roles(spiffe, @prefix <> "/aws/1111/role/sre")
     end
 
-    test "drops duplicate names, keeping the first position" do
-      spiffe = spiffe!(["/{a}/{b}"], ["{a}", "{b}"])
-      assert {:ok, ["same"]} = SPIFFE.roles(spiffe, @prefix <> "/same/same")
-    end
-
     test "works for layouts with no account at all" do
-      spiffe = spiffe!(["/ns/{namespace}/sa/{sa}"], ["{namespace}/{sa}", "{sa}"])
+      spiffe = spiffe!([{"/ns/{namespace}/sa/{sa}", ["{namespace}/{sa}", "{sa}"]}])
 
       assert {:ok, ["payments/ingest", "ingest"]} =
                SPIFFE.roles(spiffe, @prefix <> "/ns/payments/sa/ingest")
     end
 
     test "matches literals exactly, case included, and segment counts exactly" do
-      spiffe = spiffe!(["/aws/111122223333/*/role/{role}"], ["{role}"])
+      spiffe = spiffe!([{"/aws/111122223333/*/role/{role}", ["{role}"]}])
 
       for path <- [
             "/aws/444455556666/eu-west-1/role/sre",
@@ -210,13 +282,14 @@ defmodule O11yProxy.Auth.SPIFFETest do
       end
     end
 
-    test "accepts two patterns that agree on the names, refuses two that do not" do
-      agreeing = spiffe!(@aws ++ ["/aws/{account}/eu-west-1/role/{role}"], @account_then_role)
+    test "accepts two patterns giving the same names, refuses two that do not" do
+      {_, names} = @aws
+      agreeing = spiffe!([@aws, {"/aws/{account}/eu-west-1/role/{role}", names}])
 
       assert {:ok, ["111122223333/sre", "sre"]} =
                SPIFFE.roles(agreeing, @prefix <> "/aws/111122223333/eu-west-1/role/sre")
 
-      disagreeing = spiffe!(@aws ++ ["/aws/{account}/{role}/role/*"], @account_then_role)
+      disagreeing = spiffe!([@aws, {"/aws/{account}/{role}/role/*", names}])
 
       assert {:error, message} =
                SPIFFE.roles(disagreeing, @prefix <> "/aws/111122223333/eu-west-1/role/sre")
@@ -224,8 +297,8 @@ defmodule O11yProxy.Auth.SPIFFETest do
       assert message =~ "more than one path pattern"
     end
 
-    test "yields no role for another trust domain or an invalid ID" do
-      spiffe = spiffe!(["/role/{role}"], ["{role}"])
+    test "yields no names for another trust domain or an invalid ID" do
+      spiffe = spiffe!([{"/role/{role}", ["{role}"]}])
 
       assert {:none, message} = SPIFFE.roles(spiffe, "spiffe://other.example.com/role/sre")
       assert message =~ "other.example.com"

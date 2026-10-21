@@ -115,14 +115,13 @@ defmodule O11yProxy.Auth.OIDCTest do
 
   describe "with spiffe: deriving roles from a SPIFFE ID" do
     @trust_domain "mint.example.com"
-    @spiffe_paths ["/aws/{account}/*/role/{role}"]
-    @spiffe_names ["{account}/{role}", "{role}"]
-    @spiffe_oidc %{role_claim: "sub", spiffe: {@trust_domain, @spiffe_paths, @spiffe_names}}
+    @aws_path {"/aws/{account}/*/role/{role}", ["{account}/{role}", "{role}"]}
+    @spiffe_oidc %{role_claim: "sub", spiffe: {@trust_domain, [@aws_path]}}
 
     setup context do
       case Map.get(context, :oidc) do
-        %{spiffe: {domain, paths, names}} = overrides ->
-          {:ok, spiffe} = SPIFFE.compile(domain, paths, names)
+        %{spiffe: {domain, paths}} = overrides ->
+          {:ok, spiffe} = SPIFFE.compile(domain, paths)
           Application.put_env(:o11y_proxy, :oidc, OIDC.config(%{overrides | spiffe: spiffe}))
 
         _ ->
@@ -186,9 +185,21 @@ defmodule O11yProxy.Auth.OIDCTest do
                authenticate(key, OIDC.claims(%{"sub" => "not-spiffe"}))
     end
 
+    # The ID sits in its own claim here, since a non-string sub is already refused by the
+    # identity check before a policy is chosen.
+    @tag oidc: Map.merge(@spiffe_oidc, %{role_claim: "workload", default_policy: "readonly"})
+    test "refuses a role claim that is not a string, even with a default", %{key: key} do
+      for value <- [[sub("111122223333", "sre")], %{"id" => "x"}, 42] do
+        assert {:error, {:forbidden, message}} =
+                 authenticate(key, OIDC.claims(%{"workload" => value}))
+
+        assert message =~ "must be a string holding a SPIFFE ID"
+      end
+    end
+
     @tag oidc: %{
            @spiffe_oidc
-           | spiffe: {@trust_domain, ["/aws/111122223333/*/role/{role}"], ["{role}"]}
+           | spiffe: {@trust_domain, [{"/aws/111122223333/*/role/{role}", ["{role}"]}]}
          }
     test "a pattern pinning the account ignores every other account", %{key: key} do
       assert {:ok, %Caller{policy: %Policy{name: "sre"}}} =
@@ -201,9 +212,7 @@ defmodule O11yProxy.Auth.OIDCTest do
     @tag oidc:
            Map.merge(@spiffe_oidc, %{
              default_policy: "readonly",
-             spiffe:
-               {@trust_domain, ["/aws/{account}/*/role/{role}", "/aws/*/{role}/role/*"],
-                @spiffe_names}
+             spiffe: {@trust_domain, [@aws_path, {"/aws/*/{role}/role/*", ["{role}"]}]}
            })
     test "refuses an ID that two patterns read differently, even with a default",
          %{key: key} do
@@ -211,6 +220,16 @@ defmodule O11yProxy.Auth.OIDCTest do
                authenticate(key, OIDC.claims(%{"sub" => sub("111122223333", "sre")}))
 
       assert message =~ "more than one path pattern"
+    end
+
+    test "refuses rather than crashes when spiffe has no role_claim to read" do
+      {:ok, spiffe} = SPIFFE.compile(@trust_domain, [@aws_path])
+      config = %{spiffe: spiffe}
+
+      assert {:error, {:forbidden, message}} =
+               Authenticator.select_policy(%{"sub" => sub("1", "sre")}, config, @policies)
+
+      assert message =~ "without a role_claim"
     end
   end
 end

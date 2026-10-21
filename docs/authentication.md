@@ -107,7 +107,7 @@ server:
 |---|---|---|---|
 | `issuer` | Yes | | The exact `iss` to accept. Discovery is fetched from under it. |
 | `audience` | Yes | | A string or a list. The token's `aud` must contain one. |
-| `role_claim` | One of these two | | Claim path holding the role. A string or a list of strings. |
+| `role_claim` | One of these two | | Claim path holding the role. A string or a list of strings. With `spiffe`, it holds one SPIFFE ID instead. |
 | `default_policy` | One of these two | | Policy for a token whose roles match no policy. |
 | `identity_claim` | No | `sub` | Claim path naming the caller. |
 | `spiffe` | No | | Read roles out of a SPIFFE ID in `role_claim`. See [SPIFFE IDs as roles](#spiffe-ids-as-roles). |
@@ -138,9 +138,9 @@ Some issuers name a workload in `sub` and send no role claim.
 If `sub` is a [SPIFFE ID](https://spiffe.io/), the role can be read out of its path.
 
 The SPIFFE spec fixes the ID's syntax, not what its path means.
-Each issuer picks its own layout. So you describe the layout, in two parts:
+Each issuer picks its own layout. So you describe it: one entry per layout, each with
 
-- `paths`: what the ID looks like, and which segments to keep.
+- `pattern`: what the ID's path looks like, and which segments to keep.
 - `policy_names`: how to build policy names from those segments, in order.
 
 ```yaml
@@ -150,31 +150,33 @@ server:
     spiffe:
       trust_domain: broker.example.com
       paths:
-        - /aws/{account}/{region}/role/{role}
-        - /aws/{account}/role/{role}      # one pattern per layout the issuer uses
-      policy_names:                       # tried in order. The first with a policy wins.
-        - "{account}/{role}"
-        - "{role}"
+        - pattern: /aws/{account}/{region}/role/{role}
+          policy_names: ["{account}/{role}", "{role}"]
+        - pattern: /aws/{account}/role/{role}     # the same IDs, without a region
+          policy_names: ["{account}/{role}", "{role}"]
 ```
 
-**`paths`** are matched one segment at a time:
+With `spiffe:` set, `role_claim` holds one SPIFFE ID, as a string.
+It is not a role or a list of roles.
+
+**`pattern`** is matched one segment at a time:
 
 | Segment | Matches |
 |---|---|
 | `aws`, `role`, ... | That exact segment. Case matters. |
 | `*` | Any one segment. Not kept. |
-| `{name}` | Any one segment, kept as `name`. Lowercase letters, digits and `_`. |
+| `{name}` | Any one segment, kept as `name`. |
 
+- A name starts with a lowercase letter or `_`. Then lowercase letters, digits or `_`.
 - A pattern must match every segment. The segment count must be equal.
 - A name can appear once per pattern.
 - The names mean nothing to the proxy. `{account}` is just a name you chose.
 
-**`policy_names`** are filled in from the kept segments:
+**`policy_names`** are filled in from that pattern's kept segments:
 
 - `"{account}/{role}"` becomes `111122223333/sre`.
 - Text outside `{}` is kept as is.
-- An entry using a name the pattern did not keep is skipped.
-  Above, an ID without a region still gets `{account}/{role}` and `{role}`.
+- An entry may only use names its own pattern keeps.
 
 How a token is matched:
 
@@ -182,26 +184,45 @@ How a token is matched:
    No port, query, fragment, `%` escapes, empty, `.` or `..` segments.
    The scheme and trust domain must be lowercase.
 2. A pattern must match it.
-3. The `policy_names` are filled in, in order.
+3. That pattern's `policy_names` are filled in, in order.
 4. The first name with a policy wins. So `111122223333/sre` beats `sre`.
 5. No match uses `default_policy`. Otherwise the caller gets `403`.
    The message shows the ID and the names it gave.
 6. If two patterns match one ID and give different names, the caller gets `403`.
    Fix the patterns. No guess is made.
+7. A role claim that is not a string gets `403`, even with a `default_policy`.
+
+**Policy names must not collide.**
+A kept segment is chosen by whoever named the workload.
+So config refuses any two `policy_names` entries that could give two different IDs the same name.
+
+- **Separate every `{name}` with a character no segment can hold.**
+  Segments hold letters, digits, `.`, `-` and `_`. So use `/`, `:`, `@` or a space.
+  `{account}/{role}` is fine.
+  `{account}-{role}` is refused: a role named `111122223333-admin`, in any account, would fill `{role}` to the same name.
+- **Keep different layouts apart with fixed text.**
+  `{role}` for AWS and `{sa}` for Kubernetes are refused together: a service account named `sre` would get the AWS `sre` policy.
+  Write `k8s:{sa}` instead.
+- **The same entry under several patterns is allowed.**
+  That is how one issuer's layouts, like with and without a region, say they mean the same thing.
 
 Config checks these at boot:
 
-- Every `policy_names` entry can be filled by at least one pattern.
-- Every pattern can fill at least one `policy_names` entry.
 - Patterns and names are well formed.
+- Every `policy_names` entry uses only names its pattern keeps.
+- No two different entries can produce the same name.
+- Every policy, except `default_policy`, can be produced by some entry.
+  `111122223333:sre` is refused, since no entry above can give it.
+  But `111122223333_sre` is accepted: `{role}` gives it, for a role with that name.
 
 Other layouts are just other config. Istio-style IDs, for example:
 
 ```yaml
 spiffe:
   trust_domain: cluster.local
-  paths: [/ns/{namespace}/sa/{sa}]
-  policy_names: ["{namespace}/{sa}", "{sa}"]
+  paths:
+    - pattern: /ns/{namespace}/sa/{sa}
+      policy_names: ["k8s:{namespace}/{sa}", "k8s:{sa}"]
 ```
 
 **Pin accounts for broad access.**
@@ -617,10 +638,8 @@ server:
     spiffe:
       trust_domain: broker.example.com
       paths:
-        - /aws/{account}/*/role/{role}
-      policy_names:
-        - "{account}/{role}"
-        - "{role}"
+        - pattern: /aws/{account}/*/role/{role}
+          policy_names: ["{account}/{role}", "{role}"]
 
 policies:
   "111122223333/sre":        # sre in the prod account

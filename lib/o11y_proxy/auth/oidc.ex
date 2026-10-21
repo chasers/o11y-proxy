@@ -113,33 +113,44 @@ defmodule O11yProxy.Auth.OIDC do
     end
   end
 
-  # One ID yields its names in the configured `policy_names` order, and the first with a
+  # One ID yields its names in its path's `policy_names` order, and the first with a
   # policy wins — so "{account}/{role}" listed before "{role}" lets one account override
   # the role's policy everywhere else. That is a precedence the operator wrote down, over
   # a single identity, not a merge of two roles, so it does not reopen the "more than one
   # role" refusal above.
-  defp select_by_spiffe(claims, %{role_claim: path} = config, spiffe, policies) do
-    case Claims.get(claims, path) do
-      :error -> default_policy(config, policies, "none")
-      {:ok, id} -> select_by_spiffe_id(id, path, config, spiffe, policies)
+  defp select_by_spiffe(claims, config, spiffe, policies) do
+    case Map.get(config, :role_claim) do
+      nil ->
+        {:error, {:forbidden, "spiffe: is configured without a role_claim to read the ID from"}}
+
+      path ->
+        case Claims.get(claims, path) do
+          :error -> default_policy(config, policies, "none")
+          {:ok, id} -> select_by_spiffe_id(id, path, config, spiffe, policies)
+        end
     end
   end
 
-  defp select_by_spiffe_id(id, path, config, spiffe, policies) do
-    shown = if is_binary(id), do: id, else: inspect(id)
+  # A claim of the wrong type is refused even with a default, as in role mode: it means
+  # the issuer or role_claim is not what the config assumes, not that the caller simply
+  # has no role. A string that is not a SPIFFE ID is different — an issuer may sign for
+  # people as well as workloads — and gets no role.
+  defp select_by_spiffe_id(id, path, _config, _spiffe, _policies) when not is_binary(id),
+    do: {:error, {:forbidden, "token claim #{path} must be a string holding a SPIFFE ID"}}
 
+  defp select_by_spiffe_id(id, path, config, spiffe, policies) do
     case SPIFFE.roles(spiffe, id) do
       {:ok, candidates} ->
         case Enum.find(candidates, &Map.has_key?(policies, &1)) do
-          nil -> default_policy(config, policies, "#{shown}, giving #{held(candidates)}")
+          nil -> default_policy(config, policies, "#{id}, giving #{held(candidates)}")
           role -> {:ok, Map.fetch!(policies, role)}
         end
 
       {:none, reason} ->
-        default_policy(config, policies, "#{shown}, which #{reason}")
+        default_policy(config, policies, "#{id}, which #{reason}")
 
       {:error, reason} ->
-        {:error, {:forbidden, "token claim #{path} (#{shown}) #{reason}"}}
+        {:error, {:forbidden, "token claim #{path} (#{id}) #{reason}"}}
     end
   end
 

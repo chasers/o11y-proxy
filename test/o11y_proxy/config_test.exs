@@ -1,6 +1,7 @@
 defmodule O11yProxy.ConfigTest do
   use ExUnit.Case, async: false
 
+  alias O11yProxy.Auth.SPIFFE
   alias O11yProxy.Config
 
   setup do
@@ -306,21 +307,26 @@ defmodule O11yProxy.ConfigTest do
         spiffe:
           trust_domain: mint.example.com
           paths:
-            - /aws/{account}/*/role/{role}
-          policy_names: ["{account}/{role}", "{role}"]
+            - pattern: /aws/{account}/*/role/{role}
+              policy_names: ["{account}/{role}", "{role}"]
     """
+
+    @spiffe_policy_block """
+    policies:
+      "111122223333/sre":
+        sources: "*"
+      sre:
+        sources: [app_logs]
+    """
+
+    defp spiffe_yaml(oidc_block, policy_block \\ @spiffe_policy_block),
+      do: "server:\n  auth: oidc\n" <> oidc_block <> @source_block <> policy_block
 
     @tag :tmp_dir
     test "compiles a spiffe block, and accepts account-pinned policy names", %{tmp_dir: dir} do
-      yaml =
-        "server:\n  auth: oidc\n" <>
-          @spiffe_oidc_block <>
-          @source_block <>
-          "policies:\n  \"111122223333/sre\":\n    sources: \"*\"\n  sre:\n    sources: [app_logs]\n"
+      assert {:ok, config} = load_yaml(dir, spiffe_yaml(@spiffe_oidc_block))
 
-      assert {:ok, config} = load_yaml(dir, yaml)
-
-      assert %O11yProxy.Auth.SPIFFE{trust_domain: "mint.example.com", patterns: [_]} =
+      assert %SPIFFE{trust_domain: "mint.example.com", paths: [_]} =
                config.server.oidc.spiffe
 
       assert %{"111122223333/sre" => _, "sre" => _} = config.policies
@@ -334,57 +340,79 @@ defmodule O11yProxy.ConfigTest do
     end
 
     @tag :tmp_dir
-    test "refuses a spiffe policy name that no path can fill", %{tmp_dir: dir} do
+    test "refuses an empty spiffe block instead of treating it as unset", %{tmp_dir: dir} do
+      emptied = String.replace(@spiffe_oidc_block, ~r/      trust_domain:.*\z/s, "")
+      assert emptied =~ ~r/spiffe:\n\z/
+
+      assert {:error, {:invalid_block_shape, "server.oidc.spiffe", nil}} =
+               load_yaml(dir, spiffe_yaml(emptied))
+    end
+
+    @tag :tmp_dir
+    test "refuses a policy name using a {name} its pattern does not capture", %{tmp_dir: dir} do
       yaml =
-        "server:\n  auth: oidc\n" <>
-          String.replace(
-            @spiffe_oidc_block,
-            ~s("{account}/{role}", "{role}"),
-            ~s("{region}/{role}")
-          ) <>
-          @source_block <> @policy_block
+        @spiffe_oidc_block
+        |> String.replace(~s("{account}/{role}", "{role}"), ~s("{region}/{role}"))
+        |> spiffe_yaml()
 
       assert {"server.oidc.spiffe", message} = invalid!(dir, yaml)
-      assert message =~ "no path captures"
+      assert message =~ "does not capture"
     end
 
     @tag :tmp_dir
-    test "refuses a spiffe block with an unknown key, no paths or no policy_names", %{
-      tmp_dir: dir
-    } do
-      unknown =
-        "server:\n  auth: oidc\n" <>
-          @spiffe_oidc_block <> "      region: x\n" <> @source_block <> @policy_block
-
-      assert {"server.oidc.spiffe", message} = invalid!(dir, unknown)
-      assert message =~ "region"
-
-      no_paths =
-        "server:\n  auth: oidc\n" <>
-          String.replace(@spiffe_oidc_block, ~r/      paths:\n.*\n/, "") <>
-          @source_block <> @policy_block
-
-      assert {"server.oidc.spiffe", message} = invalid!(dir, no_paths)
-      assert message =~ "paths"
-
-      no_names =
-        "server:\n  auth: oidc\n" <>
-          String.replace(@spiffe_oidc_block, ~r/      policy_names:.*\n/, "") <>
-          @source_block <> @policy_block
-
-      assert {"server.oidc.spiffe", message} = invalid!(dir, no_names)
-      assert message =~ "policy_names"
-    end
-
-    @tag :tmp_dir
-    test "refuses spiffe without a role_claim to read the ID from", %{tmp_dir: dir} do
+    test "refuses a policy name that collides with another layout's", %{tmp_dir: dir} do
       yaml =
-        "server:\n  auth: oidc\n" <>
-          String.replace(@spiffe_oidc_block, "    role_claim: sub\n", "") <>
-          "    default_policy: support\n" <> @source_block <> @policy_block
+        spiffe_yaml(
+          @spiffe_oidc_block <>
+            "        - pattern: /ns/*/sa/{sa}\n" <>
+            "          policy_names: [\"{sa}\"]\n"
+        )
 
-      assert {"server.oidc", message} = invalid!(dir, yaml)
-      assert message =~ "set role_claim (usually sub)"
+      assert {"server.oidc.spiffe", message} = invalid!(dir, yaml)
+      assert message =~ "can produce the same policy name"
+    end
+
+    @tag :tmp_dir
+    test "refuses unknown keys, and missing paths, patterns or policy_names", %{tmp_dir: dir} do
+      for {yaml, block, complaint} <- [
+            {@spiffe_oidc_block <> "      region: x\n", "server.oidc.spiffe", "region"},
+            {String.replace(@spiffe_oidc_block, ~r/      paths:.*\z/s, "      x: 1\n"),
+             "server.oidc.spiffe", "paths"},
+            {String.replace(@spiffe_oidc_block, "- pattern: /aws", "- patern: /aws"),
+             "server.oidc.spiffe.paths", "patern"},
+            {String.replace(@spiffe_oidc_block, ~r/\n          policy_names:.*\n/, "\n"),
+             "server.oidc.spiffe.paths", "policy_names"}
+          ] do
+        assert {^block, message} = invalid!(dir, spiffe_yaml(yaml))
+        assert message =~ complaint
+      end
+    end
+
+    @tag :tmp_dir
+    test "refuses spiffe without a role_claim, before the generic message", %{tmp_dir: dir} do
+      no_claim = String.replace(@spiffe_oidc_block, "    role_claim: sub\n", "")
+
+      for oidc <- [no_claim, no_claim <> "    default_policy: sre\n"] do
+        assert {"server.oidc", message} = invalid!(dir, spiffe_yaml(oidc))
+        assert message =~ "set role_claim (usually sub)"
+      end
+    end
+
+    @tag :tmp_dir
+    test "refuses a policy no spiffe template can produce", %{tmp_dir: dir} do
+      policies = @spiffe_policy_block <> "  \"111122223333:sre\":\n    sources: [app_logs]\n"
+
+      assert {:policies, message} = invalid!(dir, spiffe_yaml(@spiffe_oidc_block, policies))
+      assert message =~ ~s("111122223333:sre")
+      refute message =~ ~s("sre",)
+    end
+
+    @tag :tmp_dir
+    test "lets the default_policy be a name no template produces", %{tmp_dir: dir} do
+      policies = @spiffe_policy_block <> "  \"fallback policy\":\n    sources: [app_logs]\n"
+      oidc = @spiffe_oidc_block <> "    default_policy: fallback policy\n"
+
+      assert {:ok, _} = load_yaml(dir, spiffe_yaml(oidc, policies))
     end
 
     @tag :tmp_dir
@@ -484,6 +512,35 @@ defmodule O11yProxy.ConfigTest do
       test "#{path} validates against the real backend registry" do
         assert {:ok, %{sources: [_ | _] = sources}} = Config.load(path: unquote(path))
         assert Enum.all?(sources, &is_atom(&1.backend))
+      end
+    end
+
+    # The SPIFFE snippets are fragments, not whole configs, so they are checked at the
+    # level they are written: YAML that parses, a spiffe block that compiles, and policies
+    # it can actually reach. An unquoted `{` in a flow sequence once shipped here.
+    test "every spiffe: snippet in docs/authentication.md parses and compiles" do
+      snippets =
+        ~r/```yaml\n(.*?)```/s
+        |> Regex.scan(File.read!("docs/authentication.md"), capture: :all_but_first)
+        |> List.flatten()
+        |> Enum.filter(&(&1 =~ "spiffe:"))
+
+      assert [_, _, _ | _] = snippets
+
+      for snippet <- snippets do
+        assert {:ok, yaml} = YamlElixir.read_from_string(snippet),
+               "this snippet is not valid YAML:\n#{snippet}"
+
+        spiffe = get_in(yaml, ["server", "oidc", "spiffe"]) || yaml["spiffe"]
+        paths = for path <- spiffe["paths"], do: {path["pattern"], path["policy_names"]}
+
+        assert {:ok, compiled} = SPIFFE.compile(spiffe["trust_domain"], paths),
+               "this snippet's spiffe block does not compile:\n#{snippet}"
+
+        for name <- Map.keys(yaml["policies"] || %{}) do
+          assert SPIFFE.produces?(compiled, name),
+                 "policy #{inspect(name)} is unreachable in:\n#{snippet}"
+        end
       end
     end
   end
