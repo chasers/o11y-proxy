@@ -14,6 +14,7 @@ defmodule O11yProxy.Sources.StateTable do
 
   @table __MODULE__
   @breaker_table __MODULE__.Breakers
+  @health_table __MODULE__.Health
 
   def start_link(_), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
@@ -29,8 +30,24 @@ defmodule O11yProxy.Sources.StateTable do
     # stale adapter state). A separate table means only `{failures, open_until}` is ever
     # written from a query task, atomically, and lifecycle stays the GenServer's alone.
     :ets.new(@breaker_table, [:named_table, :public, :set, write_concurrency: true])
+
+    # The last `/healthz` result, so the open route can be answered without contacting
+    # every backend on every request. See `O11yProxy.Sources.healthz/1`.
+    :ets.new(@health_table, [:named_table, :public, :set, read_concurrency: true])
     {:ok, %{}}
   end
+
+  @doc "The cached health result and when it was taken, in monotonic milliseconds."
+  @spec cached_health() :: {:ok, integer(), map()} | :error
+  def cached_health do
+    case :ets.lookup(@health_table, :healthz) do
+      [{:healthz, taken_at, result}] -> {:ok, taken_at, result}
+      [] -> :error
+    end
+  end
+
+  @spec put_health(integer(), map()) :: true
+  def put_health(taken_at, result), do: :ets.insert(@health_table, {:healthz, taken_at, result})
 
   @spec put(String.t(), map()) :: true
   def put(name, entry), do: :ets.insert(@table, {name, entry})
@@ -56,7 +73,7 @@ defmodule O11yProxy.Sources.StateTable do
   Per-source circuit breaker state, stored on the same entry `Sources.Server` already
   writes (`put/2`) rather than a separate table or process —
   "policy holder, not a bottleneck": these are written
-  directly from the supervised `Task` that runs a query in `O11yProxy.Sources.run_query/3`,
+  directly from the supervised `Task` that runs a query in `O11yProxy.Sources.run_query/4`,
   with no `GenServer.call` round trip, so one hammered source's breaker bookkeeping never
   queues behind that source's own `:capabilities`/`:health` calls.
 

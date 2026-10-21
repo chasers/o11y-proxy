@@ -22,6 +22,44 @@ defmodule O11yProxy.Backends.VictoriaMetrics.PromQLTest do
       assert selector == ~s(http_requests_total{service="checkout-api"})
     end
 
+    test "in on a label becomes an anchored alternation of literal values" do
+      assert {:ok, ~s(up{project=~"p1|p2"})} =
+               PromQL.build_selector([
+                 %Filter{field: "name", op: :eq, value: "up"},
+                 %Filter{field: "labels.project", op: :in, value: ["p1", "p2"]}
+               ])
+    end
+
+    test "in quotes regex metacharacters, so a value only ever matches itself" do
+      assert {:ok, selector} =
+               PromQL.build_selector([
+                 %Filter{field: "name", op: :eq, value: "up"},
+                 %Filter{field: "labels.project", op: :in, value: ["a.b", "c|d", "e f", 42]}
+               ])
+
+      assert selector == ~S(up{project=~"a\\.b|c\\|d|e f|42"})
+    end
+
+    test "in escapes quotes so a value cannot close the matcher" do
+      assert {:ok, selector} =
+               PromQL.build_selector([
+                 %Filter{field: "name", op: :eq, value: "up"},
+                 %Filter{field: "labels.project", op: :in, value: [~s[x"} or vector(1) #]]}
+               ])
+
+      assert selector == ~S[up{project=~"x\"\\} or vector\\(1\\) #"}]
+    end
+
+    test "in needs a non-empty list" do
+      for value <- [[], "p1"] do
+        assert {:error, {:invalid_query, _}} =
+                 PromQL.build_selector([
+                   %Filter{field: "name", op: :eq, value: "up"},
+                   %Filter{field: "labels.project", op: :in, value: value}
+                 ])
+      end
+    end
+
     test "a bare label-only selector (no name) is valid MetricsQL" do
       assert {:ok, ~s({service="checkout-api"})} =
                PromQL.build_selector([

@@ -15,7 +15,7 @@ defmodule O11yProxy.Response do
 
   @doc """
   The `POST /v1/query` envelope: shaped records, `meta`, and the (possibly empty) `errors`
-  list. `result` is what `O11yProxy.Sources.run_query/3` returns.
+  list. `result` is what `O11yProxy.Sources.run_query/4` returns.
   """
   @spec query_envelope(String.t(), map(), atom(), non_neg_integer(), [map()]) :: map()
   def query_envelope(name, result, mode, elapsed_ms, errors) do
@@ -39,7 +39,7 @@ defmodule O11yProxy.Response do
 
   @doc """
   The `POST /v1/context` bundle, shaped for the wire. `bundle` is what
-  `O11yProxy.Context.resolve/2` returns.
+  `O11yProxy.Context.resolve/3` returns.
 
   What gets collapsed differs by signal, deliberately:
 

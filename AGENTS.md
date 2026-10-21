@@ -9,6 +9,18 @@ HTTP router and the CLI enter it through the single façade `O11yProxy.Remote.ha
 Adding a third transport should mean a third thin shell, never a second copy of the
 dispatch. If you find yourself re-implementing an envelope, stop.
 
+## Auth and policy
+
+Authentication is the `O11yProxy.Auth` behaviour: headers in, an `O11yProxy.Caller` out.
+The HTTP plug is a thin shell over it, like the router is over `Remote.handle/2`. The
+caller's `O11yProxy.Policy` is enforced in exactly one place, `Sources.run_query/4`, on
+the canonical query before any adapter compiles it, plus the one lookup that bypasses
+queries (`Context`'s fetch by error ID, via `Policy.authorize_lookup/2`). `run_query/4`
+takes the caller as a required argument on purpose: a new call site that forgot it would
+otherwise skip the policy silently. Don't enforce policy in a transport, and don't add a
+second enforcement point. Nothing in the auth path names an issuer or vendor; keep it
+generic. `docs/authentication.md` is the user-facing reference.
+
 ## Project guidelines
 
 - Run `mix precommit` when you're done with a change and fix what it reports. It is

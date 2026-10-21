@@ -1,0 +1,71 @@
+# OIDC auth with role-based access. Explained step by step in docs/authentication.md.
+#
+# This file is validated by test/o11y_proxy/config_test.exs, so it always matches the
+# real config schema. The issuer and backend URLs are placeholders.
+
+server:
+  port: 4000
+  bind: 0.0.0.0                        # reachable from other machines, so auth is required
+  auth: oidc
+  oidc:
+    issuer: https://issuer.example.com # must equal the token's `iss`
+    audience: o11y-proxy               # the token's `aud` must contain this
+    role_claim: o11y.role              # claim path holding the role
+    identity_claim: sub
+    default_policy: readonly           # for valid tokens with no matching role
+
+sources:
+  - name: prod_metrics
+    backend: victoriametrics
+    signal: metrics
+    url: http://victoriametrics:8428
+
+  - name: app_logs
+    backend: clickhouse
+    signal: logs
+    url: http://clickhouse:8123
+    user: default
+    password: ""                       # use ${CLICKHOUSE_PASSWORD} in a real config
+    database: otel
+    table: otel_logs
+    mapping:
+      timestamp: Timestamp
+      severity: SeverityText
+      body: Body
+      service: ServiceName
+      trace_id: TraceId
+      span_id: SpanId
+      attributes: LogAttributes
+    hints:
+      partition_key: Timestamp
+
+policies:
+  # Full access, raw queries included.
+  sre:
+    sources: "*"
+    raw: allow
+
+  # Must name a project, and only one the token lists in `o11y.projects`.
+  support:
+    sources: [prod_metrics, app_logs]
+    max_lookback: 7d
+    max_limit: 500
+    constraints:
+      - sources: [prod_metrics]
+        field: labels.project
+        require: true
+        allowed_claim: o11y.projects
+
+  # Scoped to the token's tenant without having to ask for it.
+  tenant:
+    sources: [app_logs]
+    modes: [summary, sample]
+    max_limit: 200
+    constraints:
+      - field: attributes.tenant_id
+        inject: true
+        allowed_claim: o11y.tenant_id
+
+  readonly:
+    sources: [prod_metrics]
+    modes: [summary]

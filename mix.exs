@@ -115,6 +115,7 @@ defmodule O11yProxy.MixProject do
       {:yaml_elixir, "~> 2.11"},
       {:nimble_options, "~> 1.1"},
       {:req, "~> 0.5"},
+      {:jose, "~> 1.11"},
       {:ch, "~> 0.9"},
       {:adbc, "~> 0.12"},
       {:telemetry, "~> 1.3"},

@@ -65,6 +65,10 @@ defmodule O11yProxy.ResponseError do
     %{code: "invalid_query", message: detail, retry_after_ms: nil}
   end
 
+  defp shape({:forbidden, detail}) do
+    %{code: "forbidden", message: detail, retry_after_ms: nil}
+  end
+
   defp shape({:invalid_query, detail}) do
     %{code: "invalid_query", message: to_string(detail), retry_after_ms: nil}
   end
