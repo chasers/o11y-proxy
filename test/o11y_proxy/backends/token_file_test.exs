@@ -61,6 +61,13 @@ defmodule O11yProxy.Backends.TokenFileTest do
              TokenFile.read(Path.join(unreadable, "token"))
   end
 
+  test "an error not known to clear by itself is a config mistake" do
+    # A NUL byte cannot be in a path at all; the OS gives an error the reader has no
+    # special case for, which must not tell callers to keep retrying.
+    assert {:error, {:invalid, "the token file could not be read: " <> _}} =
+             TokenFile.read("/run/to\0ken")
+  end
+
   test "a file holding anything but one bearer token is invalid", %{tmp_dir: dir} do
     for contents <- [~s({"token": "abc"}), "abc\ndef", "abc def", "abc\r\nX-Injected: 1", "=abc"] do
       assert {:error, {:invalid, message}} = TokenFile.read(write(dir, contents))

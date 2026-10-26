@@ -69,8 +69,9 @@ defmodule O11yProxy.Sources do
     * `:max_age_ms` — reuse a result at most this old instead of checking every backend
       again. `/healthz` is open when auth is on, so without this anyone who can reach the
       port could make the proxy hit every backend as fast as they can send requests.
-    * `:status_only` — drop each source's `message`, which is `inspect/1` of the
-      backend's error and can carry hostnames and URLs. For callers who sent no token.
+    * `:status_only` — drop each source's `message`, the same text `/v1/query` gives for
+      the backend's error (`O11yProxy.ResponseError`), which can carry hostnames and URLs.
+      For callers who sent no token.
   """
   @spec healthz(keyword()) :: %{sources: %{optional(String.t()) => map()}}
   def healthz(opts \\ []) do

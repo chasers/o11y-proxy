@@ -80,7 +80,7 @@ defmodule O11yProxy.ResponseError do
               :sentry_unreachable,
               :s3_unreachable
             ] do
-    %{code: "unreachable", message: to_string(detail), retry_after_ms: nil}
+    %{code: "unreachable", message: text(detail), retry_after_ms: nil}
   end
 
   # The proxy's own credential for the source failed, not the source
@@ -91,7 +91,7 @@ defmodule O11yProxy.ResponseError do
   defp shape({:credential_unavailable, detail}) do
     %{
       code: "unreachable",
-      message: "no credential for this source: #{detail}",
+      message: "no credential for this source: #{text(detail)}",
       retry_after_ms: nil
     }
   end
@@ -99,7 +99,7 @@ defmodule O11yProxy.ResponseError do
   defp shape({:credential_invalid, detail}) do
     %{
       code: "internal",
-      message: "this source's credential is misconfigured: #{detail}",
+      message: "this source's credential is misconfigured: #{text(detail)}",
       retry_after_ms: nil
     }
   end
@@ -107,7 +107,7 @@ defmodule O11yProxy.ResponseError do
   defp shape({:credential_rejected, detail}) do
     %{
       code: "unreachable",
-      message: "the source refused the proxy's credential: #{detail}",
+      message: "the source refused the proxy's credential: #{text(detail)}",
       retry_after_ms: nil
     }
   end
@@ -119,4 +119,9 @@ defmodule O11yProxy.ResponseError do
   defp shape(reason) do
     %{code: "internal", message: inspect(reason), retry_after_ms: nil}
   end
+
+  # Details reaching /healthz come from any adapter's health/1, and one that cannot become
+  # a string must not take every source's status down with it.
+  defp text(detail) when is_binary(detail), do: detail
+  defp text(detail), do: inspect(detail)
 end

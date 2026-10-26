@@ -25,5 +25,13 @@ defmodule O11yProxy.BackendTest do
         refute message =~ inspect(kind)
       end
     end
+
+    # /healthz renders every source's error this way, so one odd detail must not raise.
+    test "a detail that is not a string is inspected, not interpolated" do
+      for kind <- Backend.credential_failure_kinds() do
+        assert %{message: message} = ResponseError.build("src", {kind, %{status: 401}})
+        assert message =~ "%{status: 401}"
+      end
+    end
   end
 end

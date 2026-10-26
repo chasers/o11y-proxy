@@ -73,13 +73,14 @@ defmodule O11yProxy.Backends.TokenFile do
   defp file_kind(:device), do: "a device"
   defp file_kind(_other), do: "a pipe, socket or other special file"
 
-  # These stay wrong until someone fixes the config: the path names something the proxy
-  # may not read, or cannot name a file at all. Anything else, a file not written yet or
-  # the system briefly out of descriptors or I/O, may clear by itself.
-  @permanent [:eacces, :eperm, :enotdir, :eisdir, :eloop, :enametoolong]
+  # These may clear by themselves: the file is not written yet, or the system is briefly
+  # out of descriptors, memory or I/O, or a network mount has gone stale. Anything else,
+  # a path the proxy may not read or that cannot name a file, stays wrong until someone
+  # fixes the config, so an error not listed here is treated as that.
+  @transient [:enoent, :eio, :emfile, :enfile, :estale, :eagain, :enomem, :eintr, :ebusy]
 
   defp unreadable(reason) do
-    kind = if reason in @permanent, do: :invalid, else: :unavailable
+    kind = if reason in @transient, do: :unavailable, else: :invalid
     {:error, {kind, "the token file could not be read: #{:file.format_error(reason)}"}}
   end
 

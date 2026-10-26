@@ -17,6 +17,19 @@ defmodule O11yProxy.RouterTest do
     assert Jason.decode!(conn.resp_body) == %{"sources" => %{}}
   end
 
+  test "GET /healthz gives a failing source the same message /v1/query would" do
+    name = start_fake_source!(signal: :logs, fail_credential: true)
+
+    conn = conn(:get, "/healthz") |> O11yProxy.Router.call(@opts)
+
+    assert %{"sources" => %{^name => source}} = Jason.decode!(conn.resp_body)
+
+    assert source == %{
+             "status" => "error",
+             "message" => "no credential for this source: the token file is empty"
+           }
+  end
+
   test "GET /v1/sources/:name/schema 404s for an unknown source" do
     conn = conn(:get, "/v1/sources/nope/schema") |> O11yProxy.Router.call(@opts)
     assert conn.status == 404

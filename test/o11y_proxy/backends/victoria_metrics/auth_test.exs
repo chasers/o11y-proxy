@@ -234,14 +234,19 @@ defmodule O11yProxy.Backends.VictoriaMetrics.AuthTest do
       refute log =~ "secret"
     end
 
-    test "a static credential refused stays an ordinary backend error" do
+    test "a static credential refused stays an ordinary backend error, without the body" do
       {:ok, state} = init(auth: "bearer", token: "revoked")
 
-      assert {:error, {:victoriametrics_error, "HTTP 401: " <> _}} = VictoriaMetrics.schema(state)
-      assert {:error, {:unhealthy, 403}} = VictoriaMetrics.health(state)
+      assert {:error, {:victoriametrics_error, "HTTP 401: the proxy's credential was refused"}} =
+               VictoriaMetrics.schema(state)
+
+      assert {:error, {:victoriametrics_error, "HTTP 403: the proxy's credential was refused"}} =
+               VictoriaMetrics.health(state)
 
       {:ok, state} = init([])
-      assert {:error, {:victoriametrics_error, "HTTP 401: " <> _}} = VictoriaMetrics.schema(state)
+
+      assert {:error, {:victoriametrics_error, "HTTP 401: the proxy's credential was refused"}} =
+               VictoriaMetrics.schema(state)
     end
   end
 
@@ -255,21 +260,14 @@ defmodule O11yProxy.Backends.VictoriaMetrics.AuthTest do
       assert log =~ "victoriametrics token_file #{path}: the token file does not hold"
     end
 
-    test "logs when the token's state changes, not on every request", %{tmp_dir: dir} do
+    test "logs every failure, at boot and per query, with no state in between",
+         %{tmp_dir: dir} do
       path = Path.join(dir, "token")
       {{:ok, state}, boot_log} = with_log(fn -> init(auth: "bearer_file", token_file: path) end)
-      assert boot_log =~ "no such file or directory"
+      assert boot_log =~ "victoriametrics token_file #{path}: the token file could not be read"
 
-      log =
-        capture_log(fn ->
-          for _ <- 1..3, do: VictoriaMetrics.schema(state)
-          File.write!(path, "fresh")
-          for _ <- 1..3, do: VictoriaMetrics.schema(state)
-        end)
-
-      assert log =~ "token_file #{path} works again"
-      refute log =~ "no such file or directory"
-      assert [_, _] = String.split(log, "works again")
+      log = capture_log(fn -> for _ <- 1..2, do: VictoriaMetrics.schema(state) end)
+      assert [_, _, _] = String.split(log, "no such file or directory")
     end
   end
 end

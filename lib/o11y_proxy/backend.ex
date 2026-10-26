@@ -29,9 +29,12 @@ defmodule O11yProxy.Backend do
   # as `{kind, message}` from any callback that needs the credential.
   @credential_failures [:credential_unavailable, :credential_invalid, :credential_rejected]
 
-  @typedoc "An adapter's own credential failing; see `credential_failure?/1`."
+  @typedoc """
+  An adapter's own credential failing; see `credential_failure?/1`. The detail should be a
+  message for the caller; anything else is shown with `inspect/1`.
+  """
   @type credential_failure ::
-          {:credential_unavailable | :credential_invalid | :credential_rejected, String.t()}
+          {:credential_unavailable | :credential_invalid | :credential_rejected, term()}
 
   @doc """
   Whether an error reason is the adapter's own credential failing rather than the backend.

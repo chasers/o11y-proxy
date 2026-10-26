@@ -111,6 +111,9 @@ defmodule O11yProxy.Test.FakeBackend do
   end
 
   @impl true
+  def health(%{fail_credential: true}),
+    do: {:error, {:credential_unavailable, "the token file is empty"}}
+
   def health(_state), do: :ok
 
   defp check_operators(filters) do
