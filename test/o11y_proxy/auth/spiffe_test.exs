@@ -218,6 +218,17 @@ defmodule O11yProxy.Auth.SPIFFETest do
         ])
 
       assert message =~ ~s("{role}" in paths[0] and "{role}" in paths[1])
+      # Their fixed segments differ, so merging them would be refused too.
+      refute message =~ "under one entry"
+    end
+
+    test "suggests merging two entries only when their fixed segments agree" do
+      message =
+        compile_error([
+          {["/aws/{account}/role/{role}"], ["{role}"]},
+          {["/aws/{account}/{region}/role/{role}"], ["{role}"]}
+        ])
+
       assert message =~ "list their patterns under one entry"
     end
 
@@ -234,6 +245,22 @@ defmodule O11yProxy.Auth.SPIFFETest do
         assert compile_error([{patterns, ["{role}"]}]) =~
                  ~s(paths[0] groups patterns #{inspect(first)} and #{inspect(second)})
       end
+    end
+
+    test "refuses grouping a pattern with no fixed segment" do
+      # Nothing in it says what kind of ID it is, so it could be any kind.
+      for patterns <- [
+            ["/{account}/{role}", "/{cluster}/{ns}/{role}"],
+            ["/aws/{account}/role/{role}", "/{cluster}/{ns}/{role}"]
+          ] do
+        assert compile_error([{patterns, ["{role}"]}]) =~ "has no fixed segment"
+      end
+
+      assert {:ok, _} = SPIFFE.compile(@domain, [{["/{account}/{role}"], ["{role}"]}])
+    end
+
+    test "reports overlapping grouped patterns as overlapping, not as two kinds" do
+      assert compile_error([{["/x/{a}", "/{a}/y"], ["{a}"]}]) =~ "can both match one ID"
     end
 
     test "needs every template to be fillable from every pattern in its entry" do

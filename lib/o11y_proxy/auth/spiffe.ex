@@ -19,8 +19,10 @@ defmodule O11yProxy.Auth.SPIFFE do
   kept apart at compile time, so a mistake fails at boot rather than as a `403` or as
   the wrong policy:
 
-    * patterns in one entry must have the same fixed segments in the same order, so an
-      entry cannot quietly join two kinds of ID under one set of names;
+    * patterns grouped in one entry must each have a fixed segment, and the same ones in
+      the same order, so an entry cannot quietly join two kinds of ID under one set of
+      names. Grouping is the operator saying the IDs are one kind; this only catches the
+      plain mix-ups;
     * no two patterns may match the same ID, so an ID has at most one reading;
     * no two different templates, in one entry or across entries, may produce the same
       name. A captured segment is chosen by whoever named the workload, so otherwise a
@@ -64,6 +66,7 @@ defmodule O11yProxy.Auth.SPIFFE do
     with :ok <- check_trust_domain(trust_domain),
          {:ok, compiled} <- compile_entries(entries),
          :ok <- check_patterns_disjoint(entries, compiled),
+         :ok <- check_groups(entries, compiled),
          :ok <- check_templates_disjoint(entries, compiled) do
       {:ok, %__MODULE__{trust_domain: trust_domain, entries: compiled}}
     end
@@ -95,30 +98,55 @@ defmodule O11yProxy.Auth.SPIFFE do
   defp compile_entry(sources, names) do
     with {:ok, patterns} <- map_ok(sources, &compile_path/1),
          {:ok, templates} <- map_ok(names, &compile_template/1),
-         :ok <- check_same_kind(sources, patterns),
          :ok <- check_filled(sources, patterns, names, templates) do
       {:ok, {patterns, templates}}
     end
   end
 
   # The patterns in one entry share its names unchecked, so they must be layouts of one
-  # kind of ID. What an ID means is the operator's, but the fixed segments are the part
-  # of a layout that says which kind it is — aws/role against k8s/sa — so they must
-  # agree. Without this, grouping would be a way around the template collision check.
-  defp check_same_kind([first | sources], [pattern | patterns]) do
+  # kind of ID. What an ID means is the operator's to say, and grouping is them saying it;
+  # this only catches the plain mix-ups. The fixed segments are the part of a layout that
+  # says which kind it is — aws/role against k8s/sa — so they must agree, and a grouped
+  # pattern with none says nothing about its kind at all. Without this, grouping would be
+  # a way around the template collision check. Runs after the overlap check, so patterns
+  # that overlap are reported as that, not as two kinds to split.
+  defp check_groups(entries, compiled) do
+    entries
+    |> Enum.zip(compiled)
+    |> Enum.with_index()
+    |> Enum.find_value(:ok, fn {{{sources, _names}, {patterns, _templates}}, index} ->
+      case check_group(Enum.zip(sources, patterns)) do
+        :ok -> nil
+        {:error, message} -> {:error, "paths[#{index}] #{message}"}
+      end
+    end)
+  end
+
+  defp check_group([_only]), do: :ok
+
+  defp check_group([{first, pattern} | _] = sourced) do
     kind = literals(pattern)
 
-    case Enum.find(Enum.zip(sources, patterns), fn {_source, p} -> literals(p) != kind end) do
-      nil ->
-        :ok
-
-      {other, _pattern} ->
-        {:error,
-         "groups patterns #{inspect(first)} and #{inspect(other)}, whose fixed segments " <>
-           "differ, so they are not layouts of the same IDs. Give each its own entry, " <>
-           "with policy_names that differ in fixed text"}
+    case Enum.find(sourced, fn {_source, p} -> kind == [] or literals(p) != kind end) do
+      nil -> :ok
+      {source, p} -> {:error, group_error(first, source, literals(p))}
     end
   end
+
+  defp group_error(_first, source, []) do
+    "groups pattern #{inspect(source)}, which has no fixed segment to show it is the " <>
+      "same kind of ID as the others. Give it its own entry"
+  end
+
+  defp group_error(first, source, _literals) do
+    "groups patterns #{inspect(first)} and #{inspect(source)}, whose fixed segments " <>
+      "differ, so they are not layouts of the same IDs. Give each its own entry, with " <>
+      "policy_names that differ in fixed text"
+  end
+
+  # Grouping has checked that an entry's patterns agree, so its first pattern stands for
+  # the entry.
+  defp kind({[pattern | _], _templates}), do: literals(pattern)
 
   defp literals(pattern), do: for({:literal, segment} <- pattern, do: segment)
 
@@ -320,15 +348,24 @@ defmodule O11yProxy.Auth.SPIFFE do
         {:error,
          "policy_names #{inspect(a)} in paths[#{ia}] and #{inspect(b)} in paths[#{ib}] " <>
            "can produce the same policy name from different IDs. Make them differ in " <>
-           "their fixed text, e.g. with a prefix such as aws: or k8s:" <> regroup_hint(ia, ib)}
+           "their fixed text, e.g. with a prefix such as aws: or k8s:" <>
+           regroup_hint(ia, ib, compiled)}
     end
   end
 
-  # Both in one entry, the IDs already share a list, so regrouping is no fix.
-  defp regroup_hint(index, index), do: ""
+  # Suggest merging only where check_groups would accept the merge: two entries with the
+  # same fixed segments. Within one entry the IDs already share a list, so it is no fix.
+  defp regroup_hint(index, index, _compiled), do: ""
 
-  defp regroup_hint(_ia, _ib),
-    do: ". If the IDs mean the same thing, list their patterns under one entry instead"
+  defp regroup_hint(ia, ib, compiled) do
+    case {kind(Enum.at(compiled, ia)), kind(Enum.at(compiled, ib))} do
+      {[_ | _] = kind, kind} ->
+        ". If the IDs mean the same thing, list their patterns under one entry instead"
+
+      _different ->
+        ""
+    end
+  end
 
   # Whether two token lists can produce one string. A capture is exactly one whole
   # segment run, so it lines up with a capture or a segment literal, never with `:other`

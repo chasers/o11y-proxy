@@ -222,14 +222,16 @@ So config refuses any two `policy_names` that could give two different IDs the s
   Write `k8s:{sa}` instead.
 - **Layouts that mean the same thing go in one entry.**
   Its patterns then share one `policy_names` list on purpose.
-  They must have the same fixed segments, in the same order.
+  Each must have a fixed segment, and they must have the same ones, in the same order.
   `/aws/{account}/{region}/role/{role}` and `/aws/{account}/role/{role}` can share an entry: both are `aws` ... `role`.
   `/aws/{account}/role/{role}` and `/k8s/{ns}/sa/{role}` cannot, so grouping is no way around the rule above.
+  Neither can `/{account}/{role}` and `/{cluster}/{ns}/{role}`: with no fixed segment, nothing shows they are one kind.
+  This only catches plain mix-ups. Grouping is you saying the IDs mean the same thing, so group only layouts you know are one kind.
 
 Config checks these at boot:
 
 - Patterns and names are well formed.
-- Patterns in one entry have the same fixed segments, in the same order.
+- Patterns grouped in one entry each have a fixed segment, and the same ones, in the same order.
 - Every `policy_names` entry uses only names that every pattern in its entry keeps.
 - No two patterns can match one ID.
 - No two `policy_names`, in one entry or across entries, can produce the same name.
@@ -262,7 +264,8 @@ Don't know the account IDs yet? Start with role-only policies.
 A refused token's `403` message shows the account, so you can pin it later.
 This only works without `default_policy`, since a default means no refusal.
 
-Not sure every ID has the same layout? List every layout's pattern in the entry.
+Not sure every ID has the same layout? List each layout's pattern in the entry, if they share fixed segments.
+Otherwise give it its own entry, with its own fixed text in `policy_names`.
 An ID that matches no pattern gets no role. It is never matched loosely.
 
 ### Key rotation
