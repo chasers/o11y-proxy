@@ -9,10 +9,18 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   write — expect it to be reached for more than the structured path (`03-adapters.md`).
   `base_path` exists so cluster-mode tenant routing
   (`/select/<accountID>/prometheus/api/v1/...`) is a config value, not an assumption.
+
+  `auth: bearer_file` is for a VictoriaMetrics behind an auth proxy, such as vmauth, that
+  takes short-lived tokens from a broker. The token is reread from `token_file` on every
+  request (`O11yProxy.Backends.TokenFile`), so whatever refreshes the file is all the
+  rotation there is. The token carries the proxy's own identity: the backend enforces the
+  scope it grants the proxy as a whole, and each caller's narrower policy is still
+  enforced here, before the query is compiled.
   """
 
   @behaviour O11yProxy.Backend
 
+  alias O11yProxy.Backends.TokenFile
   alias O11yProxy.Backends.VictoriaMetrics.PromQL
 
   @operators [:eq, :neq, :regex, :in]
@@ -26,10 +34,15 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
         default: "",
         doc: "e.g. \"/select/0/prometheus\" for cluster-mode tenant routing"
       ],
-      auth: [type: {:in, ["none", "basic", "bearer"]}, default: "none"],
+      auth: [type: {:in, ["none", "basic", "bearer", "bearer_file"]}, default: "none"],
       username: [type: :string, default: ""],
       password: [type: :string, default: ""],
       token: [type: :string, default: ""],
+      token_file: [
+        type: :string,
+        default: "",
+        doc: "for auth: bearer_file, the file holding the token, reread on every request"
+      ],
       allow_raw: [type: :boolean, default: false],
       timeout_ms: [type: :pos_integer, default: 30_000],
       summary_points: [type: :pos_integer, default: 50],
@@ -38,11 +51,16 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   end
 
   @impl true
+  def init(%{auth: "bearer_file", token_file: ""}),
+    do: {:error, "auth: bearer_file needs token_file, the path of the file holding the token"}
+
   def init(config) do
     {:ok,
      %{
        url: String.trim_trailing(config.url, "/") <> config.base_path,
        auth: build_auth(config),
+       # Tests point this at Req.Test; nothing in config sets it.
+       req_options: Application.get_env(:o11y_proxy, :victoriametrics_req_options, []),
        allow_raw: config.allow_raw,
        timeout_ms: config.timeout_ms,
        summary_points: config.summary_points,
@@ -52,6 +70,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
 
   defp build_auth(%{auth: "basic", username: u, password: p}), do: {:basic, "#{u}:#{p}"}
   defp build_auth(%{auth: "bearer", token: t}), do: {:bearer, t}
+  defp build_auth(%{auth: "bearer_file", token_file: path}), do: {:bearer_file, path}
   defp build_auth(_), do: nil
 
   @impl true
@@ -186,8 +205,16 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   end
 
   @impl true
+  # Sends the credential too: behind an auth proxy, /health under base_path is routed like
+  # any other path, and a token that cannot be read is worth reporting as unhealthy.
   def health(state) do
-    case Req.get(state.url <> "/health", receive_timeout: state.timeout_ms) do
+    with {:ok, opts} <- request_options(state, receive_timeout: state.timeout_ms) do
+      health_status(Req.get(state.url <> "/health", opts))
+    end
+  end
+
+  defp health_status(response) do
+    case response do
       {:ok, %{status: 200}} ->
         :ok
 
@@ -200,11 +227,13 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   end
 
   defp get_json(state, path, params) do
-    opts =
-      [params: params, receive_timeout: state.timeout_ms]
-      |> maybe_put_auth(state.auth)
+    with {:ok, opts} <- request_options(state, params: params, receive_timeout: state.timeout_ms) do
+      json_result(Req.get(state.url <> path, opts))
+    end
+  end
 
-    case Req.get(state.url <> path, opts) do
+  defp json_result(response) do
+    case response do
       {:ok, %{status: 200, body: %{"status" => "success"} = body}} ->
         {:ok, body}
 
@@ -218,6 +247,24 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
         {:error, {:victoriametrics_unreachable, Exception.message(exception)}}
     end
   end
+
+  defp request_options(state, opts) do
+    with {:ok, auth} <- resolve_auth(state.auth) do
+      {:ok, opts |> maybe_put_auth(auth) |> Keyword.merge(state.req_options)}
+    end
+  end
+
+  # A token that cannot be read means the query cannot be sent, the same as a backend that
+  # cannot be reached, and usually as transient: the file is mid-refresh, or whatever
+  # refreshes it is down.
+  defp resolve_auth({:bearer_file, path}) do
+    case TokenFile.read(path) do
+      {:ok, token} -> {:ok, {:bearer, token}}
+      {:error, reason} -> {:error, {:victoriametrics_unreachable, "no token to send: #{reason}"}}
+    end
+  end
+
+  defp resolve_auth(auth), do: {:ok, auth}
 
   defp maybe_put_auth(opts, nil), do: opts
   defp maybe_put_auth(opts, auth), do: Keyword.put(opts, :auth, auth)

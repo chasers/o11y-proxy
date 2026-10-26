@@ -350,6 +350,35 @@ the one-shot CLI. See [Building the binaries](#developing) for why the artifacts
 </details>
 
 <details>
+<summary><b>VictoriaMetrics behind vmauth, with a token from a broker</b></summary>
+
+When VictoriaMetrics sits behind an auth proxy such as `vmauth` that takes short-lived
+JWTs, point the source at a file that something else keeps fresh: a token broker's
+Kubernetes operator writing a Secret, a sidecar, a projected service account token.
+
+```yaml
+sources:
+  - name: prod_metrics
+    backend: victoriametrics
+    signal: metrics
+    url: https://vmauth.internal:8427
+    auth: bearer_file
+    token_file: /var/run/secrets/vm-token/token   # a mounted Secret
+```
+
+- **The file is reread on every request**, so a refreshed token is used on the next query.
+  The proxy holds no broker credentials and never refreshes the token itself.
+- **The token is the proxy's, not the caller's.** `vmauth` enforces whatever the token
+  grants the proxy as a whole, such as read-only on one tenant. Each caller's policy is
+  still enforced by the proxy first ([`docs/authentication.md`](docs/authentication.md)).
+  So grant the proxy no more than the widest policy you give a caller needs.
+- **A missing or malformed token fails the query as `unreachable`**, with the reason, and
+  `/healthz` shows the source unhealthy. Nothing is sent without a token.
+- The file must hold one bearer token. Surrounding whitespace is ignored.
+
+</details>
+
+<details>
 <summary><b>ClickHouse, VictoriaMetrics and MinIO with docker-compose</b></summary>
 
 ```bash
