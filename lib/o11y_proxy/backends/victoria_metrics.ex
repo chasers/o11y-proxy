@@ -295,50 +295,44 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   # Sends the credential too: behind an auth proxy, /health under base_path is routed like
   # any other path, and a token that cannot be read is worth reporting as unhealthy.
   def health(state) do
-    with {:ok, opts} <- request_options(state, receive_timeout: state.timeout_ms) do
-      response = Req.get(state.url <> "/health", opts)
-      with :not_refused <- refusal(state, response), do: health_status(response)
-    end
-  end
-
-  defp health_status(response) do
-    case response do
-      {:ok, %{status: 200}} ->
-        :ok
-
-      {:ok, %{status: status}} ->
-        {:error, {:unhealthy, status}}
-
-      {:error, exception} ->
-        {:error, {:victoriametrics_unreachable, Exception.message(exception)}}
+    with {:ok, response} <- request(state, "/health", []) do
+      if response.status == 200, do: :ok, else: {:error, {:unhealthy, response.status}}
     end
   end
 
   defp get_json(state, path, params) do
-    with {:ok, opts} <- request_options(state, params: params, receive_timeout: state.timeout_ms) do
-      response = Req.get(state.url <> path, opts)
-      with :not_refused <- refusal(state, response), do: json_result(response)
-    end
+    with {:ok, response} <- request(state, path, params: params), do: json_result(response)
   end
 
-  defp json_result(response) do
-    case response do
-      {:ok, %{status: 200, body: %{"status" => "success"} = body}} ->
-        {:ok, body}
+  defp json_result(%{status: 200, body: %{"status" => "success"} = body}), do: {:ok, body}
 
-      {:ok, %{status: 200, body: %{"status" => "error", "error" => reason}}} ->
-        {:error, {:victoriametrics_error, reason}}
+  defp json_result(%{status: 200, body: %{"status" => "error", "error" => reason}}),
+    do: {:error, {:victoriametrics_error, reason}}
 
-      {:ok, %{status: status, body: body}} ->
-        {:error, {:victoriametrics_error, "HTTP #{status}: #{inspect(body)}"}}
+  defp json_result(%{status: status, body: body}),
+    do: {:error, {:victoriametrics_error, "HTTP #{status}: #{inspect(body)}"}}
+
+  # The one way to the backend, so no endpoint can send without the credential or read a
+  # response before refusal/2 has seen it.
+  defp request(state, path, opts) do
+    with {:ok, opts} <- request_options(state, [receive_timeout: state.timeout_ms] ++ opts),
+         {:ok, response} <- send_get(state.url <> path, opts),
+         :not_refused <- refusal(state, response),
+         do: {:ok, response}
+  end
+
+  defp send_get(url, opts) do
+    case Req.get(url, opts) do
+      {:ok, response} ->
+        {:ok, response}
 
       {:error, exception} ->
         {:error, {:victoriametrics_unreachable, Exception.message(exception)}}
     end
   end
 
-  # Every response passes through here before its endpoint's own handling, so queries and
-  # health checks treat a refusal alike. In every mode the body is left out: it is the
+  # Every response passes through here, from request/3, so queries and health checks
+  # treat a refusal alike. In every mode the body is left out: it is the
   # auth proxy's, and may echo the credential's claims back to whoever reads the error.
   #
   # Only for a token from a file, which something else refreshes, is a refusal a
@@ -347,12 +341,12 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   # accepted without the grant for this request, which no refresh fixes. A refused static
   # credential stays refused, so for the other modes it is an ordinary backend error,
   # counted toward the breaker like before.
-  defp refusal(%{token_file: path}, {:ok, %{status: 401}}) when is_binary(path) do
+  defp refusal(%{token_file: path}, %{status: 401}) when is_binary(path) do
     log_token(path, {:refused, 401})
     {:error, {:credential_rejected, "HTTP 401"}}
   end
 
-  defp refusal(%{token_file: path}, {:ok, %{status: 403}}) when is_binary(path) do
+  defp refusal(%{token_file: path}, %{status: 403}) when is_binary(path) do
     log_token(path, {:refused, 403})
 
     {:error,
@@ -361,7 +355,14 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
         "the token broker grants the proxy"}}
   end
 
-  defp refusal(_state, {:ok, %{status: status}}) when status in [401, 403],
+  # No credential was sent, so none was refused: the source needs `auth` set.
+  defp refusal(%{auth: nil}, %{status: status}) when status in [401, 403],
+    do:
+      {:error,
+       {:victoriametrics_error,
+        "HTTP #{status}: the backend requires a credential; set auth on this source"}}
+
+  defp refusal(_state, %{status: status}) when status in [401, 403],
     do: {:error, {:victoriametrics_error, "HTTP #{status}: the proxy's credential was refused"}}
 
   defp refusal(_state, _response), do: :not_refused

@@ -381,9 +381,10 @@ sources:
 - Either way the reason is in the message, nothing is sent without a token, and `/healthz`
   shows the source unhealthy. **None of these count toward the circuit breaker**, since
   the backend itself is fine.
-- **Every token failure is logged as a warning with the path**, at startup and on each
-  failing query. A broker outage repeats the line at the pace queries arrive; collapse it
-  in your log pipeline if needed. A file that cannot be read at startup is not refused,
+- **Every token failure is logged as a warning with the path**: at startup, and on every
+  request that fails, which includes `/healthz` checks and each label a schema lookup
+  reads. A broker outage repeats the line at that pace; collapse it in your log pipeline
+  if needed. A file that cannot be read at startup is not refused,
   since whatever writes it may start after the proxy.
 - **`token`, `username` or `password` with `bearer_file`, or `token_file` with another
   mode, is refused**, since it would be silently ignored.

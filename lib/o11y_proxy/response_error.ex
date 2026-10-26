@@ -58,19 +58,19 @@ defmodule O11yProxy.ResponseError do
   end
 
   defp shape({:invalid_raw_query, detail}) do
-    %{code: "invalid_query", message: "invalid raw query: #{detail}", retry_after_ms: nil}
+    %{code: "invalid_query", message: "invalid raw query: #{text(detail)}", retry_after_ms: nil}
   end
 
   defp shape({:raw_not_allowed, detail}) do
-    %{code: "invalid_query", message: detail, retry_after_ms: nil}
+    %{code: "invalid_query", message: text(detail), retry_after_ms: nil}
   end
 
   defp shape({:forbidden, detail}) do
-    %{code: "forbidden", message: detail, retry_after_ms: nil}
+    %{code: "forbidden", message: text(detail), retry_after_ms: nil}
   end
 
   defp shape({:invalid_query, detail}) do
-    %{code: "invalid_query", message: to_string(detail), retry_after_ms: nil}
+    %{code: "invalid_query", message: text(detail), retry_after_ms: nil}
   end
 
   defp shape({unreachable, detail})
@@ -120,8 +120,9 @@ defmodule O11yProxy.ResponseError do
     %{code: "internal", message: inspect(reason), retry_after_ms: nil}
   end
 
-  # Details reaching /healthz come from any adapter's health/1, and one that cannot become
-  # a string must not take every source's status down with it.
+  # Every message that carries a detail goes through here. Details reaching /healthz come
+  # from any adapter's health/1, and one that is not a string must not take every
+  # source's status down with it, or reach a caller as a term JSON cannot encode.
   defp text(detail) when is_binary(detail), do: detail
   defp text(detail), do: inspect(detail)
 end

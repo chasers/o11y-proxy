@@ -243,10 +243,11 @@ defmodule O11yProxy.Backends.VictoriaMetrics.AuthTest do
       assert {:error, {:victoriametrics_error, "HTTP 403: the proxy's credential was refused"}} =
                VictoriaMetrics.health(state)
 
+      # auth: none sent nothing, so the message must not blame a credential.
       {:ok, state} = init([])
 
-      assert {:error, {:victoriametrics_error, "HTTP 401: the proxy's credential was refused"}} =
-               VictoriaMetrics.schema(state)
+      assert {:error, {:victoriametrics_error, message}} = VictoriaMetrics.schema(state)
+      assert message == "HTTP 401: the backend requires a credential; set auth on this source"
     end
   end
 

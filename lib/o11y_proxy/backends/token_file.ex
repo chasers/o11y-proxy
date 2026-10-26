@@ -74,10 +74,25 @@ defmodule O11yProxy.Backends.TokenFile do
   defp file_kind(_other), do: "a pipe, socket or other special file"
 
   # These may clear by themselves: the file is not written yet, or the system is briefly
-  # out of descriptors, memory or I/O, or a network mount has gone stale. Anything else,
+  # out of descriptors, memory or I/O, or a network mount has gone stale or away. Anything else,
   # a path the proxy may not read or that cannot name a file, stays wrong until someone
   # fixes the config, so an error not listed here is treated as that.
-  @transient [:enoent, :eio, :emfile, :enfile, :estale, :eagain, :enomem, :eintr, :ebusy]
+  @transient [
+    :enoent,
+    :eio,
+    :emfile,
+    :enfile,
+    :estale,
+    :eagain,
+    :enomem,
+    :eintr,
+    :ebusy,
+    # A network or FUSE/CSI mount whose daemon or server is restarting.
+    :enotconn,
+    :etimedout,
+    :ehostdown,
+    :enolck
+  ]
 
   defp unreadable(reason) do
     kind = if reason in @transient, do: :unavailable, else: :invalid
