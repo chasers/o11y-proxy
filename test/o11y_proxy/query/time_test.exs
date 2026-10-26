@@ -5,6 +5,22 @@ defmodule O11yProxy.Query.TimeTest do
 
   @now ~U[2026-09-05 20:00:00Z]
 
+  describe "duration_seconds/1" do
+    test "parses every unit" do
+      assert {:ok, 30} = Time.duration_seconds("30s")
+      assert {:ok, 900} = Time.duration_seconds("15m")
+      assert {:ok, 7200} = Time.duration_seconds("2h")
+      assert {:ok, 604_800} = Time.duration_seconds("7d")
+      assert {:ok, 1_209_600} = Time.duration_seconds("2w")
+    end
+
+    test "refuses zero, a missing unit, and anything else" do
+      for bad <- ["0d", "00h", "7", "d", "7 d", "-1d", "1y", "now-7d"] do
+        assert {:error, {:invalid_duration, ^bad}} = Time.duration_seconds(bad)
+      end
+    end
+  end
+
   test "now resolves to the anchor" do
     assert {:ok, @now} = Time.parse("now", @now)
   end

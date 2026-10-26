@@ -3,7 +3,7 @@
   "info": {
     "title": "o11y-proxy",
     "version": "0.4.0",
-    "description": "One HTTP+JSON interface over Sentry, ClickHouse, VictoriaMetrics, and object storage queried with DuckDB for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies."
+    "description": "One HTTP+JSON interface over Sentry, ClickHouse, VictoriaMetrics, and object storage queried with DuckDB for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies. When the server runs with `auth: token` or `auth: oidc`, every route except /healthz and /openapi.json needs an `Authorization: Bearer <token>` header; under `auth: oidc` a role policy can further limit which sources and filters a caller may use, and refusals are 403 with a message naming what to change."
   },
   "servers": [
     {
@@ -25,6 +25,15 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailable"
           }
         }
       }
@@ -63,6 +72,15 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailable"
           }
         }
       }
@@ -82,7 +100,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/openapi.json": {
@@ -93,7 +112,8 @@
           "200": {
             "description": "The OpenAPI document"
           }
-        }
+        },
+        "security": []
       }
     },
     "/v1/query": {
@@ -130,6 +150,15 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailable"
           }
         }
       }
@@ -158,6 +187,15 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailable"
           }
         }
       }
@@ -176,6 +214,15 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailable"
           }
         }
       }
@@ -431,7 +478,8 @@
               "unreachable",
               "invalid_query",
               "unsupported_operator",
-              "internal"
+              "internal",
+              "forbidden"
             ]
           },
           "message": {
@@ -690,6 +738,66 @@
           }
         }
       }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Required unless the server runs with `auth: none`. With `auth: token` it is the shared static token; with `auth: oidc` it is a JWT from the configured OpenID Connect issuer."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing, malformed, expired or untrusted bearer token",
+        "headers": {
+          "WWW-Authenticate": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "A valid caller whose policy does not allow this request. The message names the source, field, operator, values or cap to change.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      },
+      "AuthUnavailable": {
+        "description": "The server cannot verify tokens right now, e.g. the issuer's signing keys have not loaded yet",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "integer"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      }
     }
-  }
+  },
+  "security": [
+    {},
+    {
+      "bearerAuth": []
+    }
+  ]
 }

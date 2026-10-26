@@ -12,7 +12,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics.PromQL do
   @doc """
   Builds a MetricsQL selector (`name{label="v",...}`) from canonical filters. An optional
   `{"field": "name", "op": "eq", ...}` filter supplies the metric name; every other
-  filter must be `labels.<name>` with `eq`/`neq`/`regex`. A bare `{label="v"}` selector
+  filter must be `labels.<name>` with `eq`/`neq`/`regex`/`in`. A bare `{label="v"}` selector
   with no name is valid PromQL/MetricsQL and is allowed; a selector with neither a name
   nor any label matcher is not. Fails rather than silently dropping a filter it can't
   express — an `eq`/`neq`/`regex` value is always quoted and escaped, never spliced raw.
@@ -65,11 +65,27 @@ defmodule O11yProxy.Backends.VictoriaMetrics.PromQL do
       :eq -> {:ok, ~s(#{label}="#{escape(value)}")}
       :neq -> {:ok, ~s(#{label}!="#{escape(value)}")}
       :regex -> {:ok, ~s(#{label}=~"#{escape(value)}")}
+      :in -> in_matcher(label, value)
       other -> {:error, {:unsupported_operator, other}}
     end
   end
 
   defp matcher_clause(%{field: field}), do: {:error, {:unknown_field, field}}
+
+  # PromQL has no set-membership matcher, so `in` becomes an alternation of literal
+  # values. Label regex matchers are fully anchored, so `a|b` matches exactly `a` or `b`.
+  defp in_matcher(label, [_ | _] = values) do
+    alternation = Enum.map_join(values, "|", &quote_meta(to_string(&1)))
+    {:ok, ~s(#{label}=~"#{escape(alternation)}")}
+  end
+
+  defp in_matcher(_label, _value),
+    do: {:error, {:invalid_query, "op in needs a non-empty list of values"}}
+
+  # The backend's regex engine is RE2, which rejects escapes of characters that are not
+  # special — `Regex.escape/1` escapes spaces and `#`, and RE2 refuses `\ `. So only RE2's
+  # own metacharacters are escaped, the same set Go's `regexp.QuoteMeta` uses.
+  defp quote_meta(value), do: String.replace(value, ~r/[\\.+*?()|\[\]{}^$]/, "\\\\\\0")
 
   # PromQL label-value strings are double-quoted; escape backslash and quote so a
   # hostile value can only ever land inside the quotes, never end them early.

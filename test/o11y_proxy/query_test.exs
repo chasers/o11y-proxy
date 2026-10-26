@@ -47,6 +47,17 @@ defmodule O11yProxy.QueryTest do
     assert {:ok, %Query{raw: "rate(x[5m])", filters: []}} = Query.parse(params, now: @now)
   end
 
+  test "rejects a raw that is not a string, since adapters treat any truthy raw as raw" do
+    base = %{"signal" => "logs", "from" => "now-1h", "to" => "now"}
+
+    for raw <- [true, 123, %{"q" => "x"}, ["SELECT 1"]] do
+      assert {:error, {:invalid_raw, message}} = Query.parse(Map.put(base, "raw", raw))
+      assert message =~ "raw must be a string"
+    end
+
+    assert {:ok, %Query{raw: nil}} = Query.parse(base)
+  end
+
   test "rejects an unknown signal" do
     assert {:error, {:invalid_value, "signal", "bogus", _}} =
              Query.parse(%{"signal" => "bogus", "from" => "now-1h", "to" => "now"}, now: @now)

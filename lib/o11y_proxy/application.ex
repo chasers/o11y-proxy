@@ -49,14 +49,20 @@ defmodule O11yProxy.Application do
 
     children =
       core_children() ++
-        [{Bandit, plug: O11yProxy.Router, ip: {127, 0, 0, 1}, port: config.server.port}]
+        auth_children(config) ++
+        [{Bandit, plug: O11yProxy.Router, ip: config.server.bind, port: config.server.port}]
 
     opts = [strategy: :one_for_one, name: O11yProxy.Supervisor]
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
         O11yProxy.Sources.start_all(config.sources)
-        Logger.info("o11y-proxy listening on http://127.0.0.1:#{config.server.port}")
+
+        Logger.info(
+          "o11y-proxy listening on http://#{host(config.server.bind)}:#{config.server.port} " <>
+            "(auth: #{config.server.auth})"
+        )
+
         keep_alive_if_release()
         block_if_bare_argument()
         {:ok, pid}
@@ -97,6 +103,20 @@ defmodule O11yProxy.Application do
     ]
   end
 
+  # The signing-key cache is a server concern only: the CLI never authenticates anyone, so
+  # `start_core/2` leaves it out and a one-shot command never fetches an issuer's keys.
+  defp auth_children(%{server: %{auth: :oidc, oidc: oidc}}) do
+    keys_opts =
+      Map.put(oidc, :req_options, Application.get_env(:o11y_proxy, :oidc_req_options, []))
+
+    [{O11yProxy.Auth.OIDC.Keys, keys_opts}]
+  end
+
+  defp auth_children(_config), do: []
+
+  defp host({_, _, _, _, _, _, _, _} = address), do: "[#{:inet.ntoa(address)}]"
+  defp host(address), do: to_string(:inet.ntoa(address))
+
   # Distribution isn't on by default: Burrito's launcher passes `-setcookie` but no
   # `-name`/`-sname`, and the release vm.args sets neither, so the binary otherwise runs
   # as :nonode@nohost. Starting it here is what lets a CLI invocation find this daemon and
@@ -135,6 +155,8 @@ defmodule O11yProxy.Application do
 
   defp put_runtime_env(config) do
     Application.put_env(:o11y_proxy, :auth, config.server.auth)
+    Application.put_env(:o11y_proxy, :oidc, config.server.oidc)
+    Application.put_env(:o11y_proxy, :policies, config.policies)
     Application.put_env(:o11y_proxy, :defaults, config.defaults)
   end
 

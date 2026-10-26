@@ -203,11 +203,11 @@ defmodule O11yProxy.RouterTest do
       # Two failures trip the breaker (threshold: 2 above).
       for _ <- 1..2 do
         assert {:error, {:fake_unreachable, _}} =
-                 O11yProxy.Sources.run_query(name, logs_query(), 1_000)
+                 O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
       end
 
       assert {:error, {:circuit_open, retry_after_ms}} =
-               O11yProxy.Sources.run_query(name, logs_query(), 1_000)
+               O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
 
       assert retry_after_ms > 0
     end
@@ -215,7 +215,8 @@ defmodule O11yProxy.RouterTest do
     test "an open breaker surfaces as an unreachable error with retry_after_ms in the envelope" do
       name = start_fake_source!(signal: :logs, fail: true)
 
-      for _ <- 1..2, do: O11yProxy.Sources.run_query(name, logs_query(), 1_000)
+      for _ <- 1..2,
+          do: O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
 
       conn =
         post_json(:post, "/v1/query", %{
@@ -244,13 +245,15 @@ defmodule O11yProxy.RouterTest do
 
       for _ <- 1..5 do
         assert {:error, {:unsupported_operator, :regex}} =
-                 O11yProxy.Sources.run_query(name, bad, 1_000)
+                 O11yProxy.Sources.run_query(name, bad, O11yProxy.Caller.local(), 1_000)
       end
 
       # Still healthy: a client-side dialect mismatch is not a backend outage. This is the
       # exact path /v1/context's {from,to,service} fan-out takes against Sentry.
       assert O11yProxy.Sources.breaker_status(name) == :closed
-      assert {:ok, _} = O11yProxy.Sources.run_query(name, logs_query(), 1_000)
+
+      assert {:ok, _} =
+               O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
     end
 
     test "repeated {from,to,service} context calls don't wedge a source that can't express the filter" do
@@ -273,9 +276,14 @@ defmodule O11yProxy.RouterTest do
     test "a success resets the failure count, so the breaker only trips on consecutive failures" do
       name = start_fake_source!(signal: :logs)
 
-      assert {:ok, _} = O11yProxy.Sources.run_query(name, logs_query(), 1_000)
-      assert {:ok, _} = O11yProxy.Sources.run_query(name, logs_query(), 1_000)
-      assert {:ok, _} = O11yProxy.Sources.run_query(name, logs_query(), 1_000)
+      assert {:ok, _} =
+               O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
+
+      assert {:ok, _} =
+               O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
+
+      assert {:ok, _} =
+               O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
     end
   end
 

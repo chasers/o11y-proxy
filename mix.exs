@@ -109,12 +109,17 @@ defmodule O11yProxy.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bandit, "~> 1.5"},
+      # The bandit, jose and plug_crypto floors are the first releases past advisories
+      # mix deps.audit reported, so regenerating the lock cannot bring those back.
+      {:bandit, "~> 1.14"},
       {:plug, "~> 1.16"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.11"},
       {:nimble_options, "~> 1.1"},
       {:req, "~> 0.5"},
+      {:jose, "~> 1.11 and >= 1.11.13"},
+      # Transitive through plug; listed only to hold the floor above.
+      {:plug_crypto, "~> 2.2 and >= 2.2.1"},
       {:ch, "~> 0.9"},
       {:adbc, "~> 0.12"},
       {:telemetry, "~> 1.3"},

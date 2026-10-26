@@ -51,3 +51,43 @@ defmodule O11yProxy.Backends.VictoriaMetricsTest do
       stripped |> String.replace(~r/[^"]/, "") |> String.length() == 2
     end
 end
+
+defmodule O11yProxy.Backends.VictoriaMetrics.CompileTest do
+  @moduledoc """
+  `compile/2` through the adapter itself, with no VictoriaMetrics running. The module above
+  is tagged `:victoriametrics` and so excluded by default; this one runs in CI. It exists
+  because PromQL gained `in` while the adapter's own operator check still refused it, and
+  a test of `PromQL.build_selector/1` alone could not see that.
+  """
+
+  use ExUnit.Case, async: true
+
+  alias O11yProxy.Backends.VictoriaMetrics
+  alias O11yProxy.Query
+  alias O11yProxy.Query.Filter
+
+  setup do
+    {:ok, config} =
+      NimbleOptions.validate([url: "http://localhost:8428"], VictoriaMetrics.config_schema())
+
+    {:ok, state} = VictoriaMetrics.init(Map.new(config))
+    %{state: state}
+  end
+
+  test "compiles in on a label, as a policy injects for several allowed values", %{state: state} do
+    query = %Query{
+      signal: :metrics,
+      from: ~U[2026-10-20 11:00:00Z],
+      to: ~U[2026-10-20 12:00:00Z],
+      mode: :full,
+      limit: 10,
+      filters: [
+        %Filter{field: "name", op: :eq, value: "up"},
+        %Filter{field: "labels.project", op: :in, value: ["p1", "p2"]}
+      ]
+    }
+
+    assert {:ok, %{metricsql: ~s(up{project=~"p1|p2"})}} = VictoriaMetrics.compile(state, query)
+    assert :in in VictoriaMetrics.capabilities(state).operators
+  end
+end
