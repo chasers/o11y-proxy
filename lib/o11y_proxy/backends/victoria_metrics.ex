@@ -23,6 +23,8 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   alias O11yProxy.Backends.TokenFile
   alias O11yProxy.Backends.VictoriaMetrics.PromQL
 
+  require Logger
+
   @operators [:eq, :neq, :regex, :in]
 
   @impl true
@@ -54,7 +56,17 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   def init(%{auth: "bearer_file", token_file: ""}),
     do: {:error, "auth: bearer_file needs token_file, the path of the file holding the token"}
 
+  # A credential set for another mode would be silently ignored, and the one that is used
+  # instead may be stale; refusing says which one the operator meant to drop.
+  def init(%{auth: "bearer_file", token: token}) when token != "",
+    do: {:error, "auth: bearer_file reads token_file; remove token, which would be ignored"}
+
+  def init(%{auth: auth, token_file: path}) when auth != "bearer_file" and path != "",
+    do: {:error, "token_file is only read with auth: bearer_file, not auth: #{auth}"}
+
   def init(config) do
+    warn_if_unreadable(config)
+
     {:ok,
      %{
        url: String.trim_trailing(config.url, "/") <> config.base_path,
@@ -67,6 +79,17 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
        full_points: config.full_points
      }}
   end
+
+  # Not a boot failure: whatever writes the file may start after the proxy does, and the
+  # source recovers by itself once it has. But a typo in the path looks the same, and
+  # would otherwise show only as failing queries.
+  defp warn_if_unreadable(%{auth: "bearer_file", token_file: path}) do
+    with {:error, {_kind, reason}} <- TokenFile.read(path) do
+      Logger.warning("victoriametrics token_file #{path}: #{reason}; queries fail until it is")
+    end
+  end
+
+  defp warn_if_unreadable(_config), do: :ok
 
   defp build_auth(%{auth: "basic", username: u, password: p}), do: {:basic, "#{u}:#{p}"}
   defp build_auth(%{auth: "bearer", token: t}), do: {:bearer, t}
@@ -85,8 +108,11 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   end
 
   @impl true
+  # The token is read once for the whole call, so its many requests share one credential
+  # even if the file is rotated partway through.
   def schema(state) do
-    with {:ok, %{"data" => label_names}} <- get_json(state, "/api/v1/labels", %{}) do
+    with {:ok, state} <- with_token(state),
+         {:ok, %{"data" => label_names}} <- get_json(state, "/api/v1/labels", %{}) do
       # Genuinely cheap, but still bounded — a VM instance can have hundreds of label
       # names, and we're not fetching one distinct-values call per.
       fields =
@@ -248,23 +274,29 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
     end
   end
 
+  # The request's own options go last, so nothing in req_options can replace the
+  # credential or the params.
   defp request_options(state, opts) do
-    with {:ok, auth} <- resolve_auth(state.auth) do
-      {:ok, opts |> maybe_put_auth(auth) |> Keyword.merge(state.req_options)}
+    with {:ok, state} <- with_token(state) do
+      {:ok, Keyword.merge(state.req_options, maybe_put_auth(opts, state.auth))}
     end
   end
 
-  # A token that cannot be read means the query cannot be sent, the same as a backend that
-  # cannot be reached, and usually as transient: the file is mid-refresh, or whatever
-  # refreshes it is down.
-  defp resolve_auth({:bearer_file, path}) do
+  # Swaps a token file for the token it holds now. A state that already holds a token
+  # passes through, which is what lets one call read the file once.
+  #
+  # A token that cannot be read is the proxy's credential failing, not the backend, so it
+  # is `:credential_unavailable` or `:credential_invalid` — which Sources keeps out of the
+  # circuit breaker, so the reason reaches the caller instead of "breaker open".
+  defp with_token(%{auth: {:bearer_file, path}} = state) do
     case TokenFile.read(path) do
-      {:ok, token} -> {:ok, {:bearer, token}}
-      {:error, reason} -> {:error, {:victoriametrics_unreachable, "no token to send: #{reason}"}}
+      {:ok, token} -> {:ok, %{state | auth: {:bearer, token}}}
+      {:error, {:unavailable, reason}} -> {:error, {:credential_unavailable, reason}}
+      {:error, {:invalid, reason}} -> {:error, {:credential_invalid, reason}}
     end
   end
 
-  defp resolve_auth(auth), do: {:ok, auth}
+  defp with_token(state), do: {:ok, state}
 
   defp maybe_put_auth(opts, nil), do: opts
   defp maybe_put_auth(opts, auth), do: Keyword.put(opts, :auth, auth)

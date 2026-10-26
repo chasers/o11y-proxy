@@ -83,6 +83,25 @@ defmodule O11yProxy.ResponseError do
     %{code: "unreachable", message: to_string(detail), retry_after_ms: nil}
   end
 
+  # The proxy's own credential for the source failed, not the source. A missing token may
+  # turn up, so it is `unreachable` like any outage; a malformed one is a config mistake
+  # retrying will not fix, which is what `internal` tells the caller.
+  defp shape({:credential_unavailable, detail}) do
+    %{
+      code: "unreachable",
+      message: "no credential for this source: #{detail}",
+      retry_after_ms: nil
+    }
+  end
+
+  defp shape({:credential_invalid, detail}) do
+    %{
+      code: "internal",
+      message: "this source's credential is misconfigured: #{detail}",
+      retry_after_ms: nil
+    }
+  end
+
   defp shape(:not_found) do
     %{code: "invalid_query", message: "no such source", retry_after_ms: nil}
   end

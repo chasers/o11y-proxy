@@ -53,8 +53,8 @@
     {
       "source": "smells",
       "kind": "fixed_shape_map",
-      "fingerprint": "sha256:4f44d70bc5b486b5c770e47aaa7243ce9cf534ef0caa995ae954569e1df87203",
-      "message": "map shape [:code, :message, :retry_after_ms] appears 13 times; consider a struct or explicit contract if it is domain data",
+      "fingerprint": "sha256:28651105e2481d6c0b565f7cb2e37f4e202f89a55da89f07cd23bd6725c84f07",
+      "message": "map shape [:code, :message, :retry_after_ms] appears 15 times; consider a struct or explicit contract if it is domain data",
       "file": "lib/o11y_proxy/response_error.ex",
       "line": 21
     }
@@ -68,7 +68,7 @@
         "src",
         "test/support"
       ],
-      "file_count": 48
+      "file_count": 50
     },
     "smells": {
       "mix_env": "test",
@@ -78,7 +78,7 @@
         "src",
         "test/support"
       ],
-      "file_count": 48
+      "file_count": 50
     }
   }
 }

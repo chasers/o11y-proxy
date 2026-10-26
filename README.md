@@ -371,9 +371,14 @@ sources:
 - **The token is the proxy's, not the caller's.** `vmauth` enforces whatever the token
   grants the proxy as a whole, such as read-only on one tenant. Each caller's policy is
   still enforced by the proxy first ([`docs/authentication.md`](docs/authentication.md)).
-  So grant the proxy no more than the widest policy you give a caller needs.
-- **A missing or malformed token fails the query as `unreachable`**, with the reason, and
-  `/healthz` shows the source unhealthy. Nothing is sent without a token.
+  So grant the proxy no more than the widest policy you give any caller.
+- **A missing or empty token file fails the query as `unreachable`**, since it may turn up.
+  A file that holds something else, or is not a regular file, fails as `internal`: a config
+  mistake. Either way the reason is in the message, nothing is sent without a token, and
+  `/healthz` shows the source unhealthy. Neither counts toward the circuit breaker.
+- **A `token_file` that cannot be read at startup is logged as a warning**, not refused:
+  whatever writes it may start after the proxy. Setting `token` with `bearer_file`, or
+  `token_file` with another mode, is refused.
 - The file must hold one bearer token. Surrounding whitespace is ignored.
 
 </details>

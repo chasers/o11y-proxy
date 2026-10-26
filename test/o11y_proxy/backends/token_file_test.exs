@@ -28,34 +28,58 @@ defmodule O11yProxy.Backends.TokenFileTest do
     assert {:ok, "second"} = TokenFile.read(path)
   end
 
-  test "refuses an empty file", %{tmp_dir: dir} do
-    for contents <- ["", "\n", "   \n"] do
-      assert {:error, "the token file is empty"} = TokenFile.read(write(dir, contents))
-    end
+  test "follows a symlink, as a Kubernetes Secret volume uses", %{tmp_dir: dir} do
+    target = write(dir, "linked")
+    link = Path.join(dir, "link")
+    File.ln_s!(target, link)
+
+    assert {:ok, "linked"} = TokenFile.read(link)
   end
 
-  test "refuses anything that is not one bearer token", %{tmp_dir: dir} do
+  test "an empty or missing file may turn up, so it is unavailable", %{tmp_dir: dir} do
+    for contents <- ["", "\n", "   \n"] do
+      assert {:error, {:unavailable, "the token file is empty"}} =
+               TokenFile.read(write(dir, contents))
+    end
+
+    assert {:error, {:unavailable, message}} = TokenFile.read(Path.join(dir, "missing"))
+    assert message == "the token file could not be read: no such file or directory"
+  end
+
+  test "a file holding anything but one bearer token is invalid", %{tmp_dir: dir} do
     for contents <- [~s({"token": "abc"}), "abc\ndef", "abc def", "abc\r\nX-Injected: 1", "=abc"] do
-      assert {:error, message} = TokenFile.read(write(dir, contents))
+      assert {:error, {:invalid, message}} = TokenFile.read(write(dir, contents))
       assert message =~ "does not hold a single bearer token"
     end
   end
 
-  test "refuses a file far bigger than any token, without reading it whole", %{tmp_dir: dir} do
-    assert {:error, message} = TokenFile.read(write(dir, String.duplicate("a", 64 * 1024 + 1)))
+  test "a file far bigger than any token is invalid, and not read whole", %{tmp_dir: dir} do
+    assert {:error, {:invalid, message}} =
+             TokenFile.read(write(dir, String.duplicate("a", 64 * 1024 + 1)))
+
     assert message =~ "over 64 KB"
 
     assert {:ok, _} = TokenFile.read(write(dir, String.duplicate("a", 64 * 1024)))
   end
 
-  test "says why a file cannot be read, without naming its path", %{tmp_dir: dir} do
-    missing = Path.join(dir, "missing")
+  test "refuses what is not a regular file, without blocking on a named pipe",
+       %{tmp_dir: dir} do
+    assert {:error, {:invalid, "the token file is a directory, not a regular file"}} =
+             TokenFile.read(dir)
 
-    assert {:error, message} = TokenFile.read(missing)
-    assert message =~ "could not be read (enoent)"
-    refute message =~ dir
+    fifo = Path.join(dir, "fifo")
+    {_, 0} = System.cmd("mkfifo", [fifo])
 
-    assert {:error, message} = TokenFile.read(dir)
-    assert message =~ "could not be read"
+    assert {:error,
+            {:invalid,
+             "the token file is a pipe, socket or other special file, not a regular file"}} =
+             TokenFile.read(fifo)
+  end
+
+  test "never names the path in a message", %{tmp_dir: dir} do
+    for path <- [Path.join(dir, "missing"), dir, write(dir, "a b")] do
+      assert {:error, {_kind, message}} = TokenFile.read(path)
+      refute message =~ dir
+    end
   end
 end

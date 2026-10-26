@@ -14,6 +14,12 @@ defmodule O11yProxy.Sources do
   # backoff (`Application.put_env(:o11y_proxy, :breaker, threshold: 2, backoff_ms: 50)`).
   @breaker_defaults [threshold: 5, backoff_ms: 30_000]
 
+  # An adapter that could not get its own credential never reached the backend, so these
+  # say nothing about its health. Counted, they would open the breaker, and the caller
+  # would see "breaker open" for the next 30s instead of what is wrong with the token —
+  # even after the token is fixed.
+  @credential_failures [:credential_unavailable, :credential_invalid]
+
   @doc "Starts one supervised `Sources.Server` per configured source."
   @spec start_all([Source.t()]) :: :ok
   def start_all(sources) do
@@ -167,7 +173,8 @@ defmodule O11yProxy.Sources do
   fails fast with `{:error, {:circuit_open, retry_after_ms}}` without touching
   `compile/2`/`execute/2` at all, per "fail fast into the errors array rather than
   burning the caller's timeout budget". A successful
-  execute closes the breaker; a failure (including a timeout) bumps its failure count.
+  execute closes the breaker; a failure (including a timeout) bumps its failure count,
+  except an adapter failing to get its own credential, which never reached the backend.
   """
   @spec run_query(String.t(), O11yProxy.Query.t(), Caller.t(), timeout()) ::
           {:ok,
@@ -212,6 +219,9 @@ defmodule O11yProxy.Sources do
              total: result.total,
              cursor: Map.get(result, :cursor)
            }}
+
+        {:error, {kind, _detail}} = error when kind in @credential_failures ->
+          error
 
         {:error, _reason} = error ->
           record_failure(name)
