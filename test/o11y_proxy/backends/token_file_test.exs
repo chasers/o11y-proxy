@@ -46,6 +46,18 @@ defmodule O11yProxy.Backends.TokenFileTest do
     assert message == "the token file could not be read: no such file or directory"
   end
 
+  test "a file that exists but cannot be read stays that way, so it is invalid",
+       %{tmp_dir: dir} do
+    unreadable = write(dir, "token")
+    File.chmod!(unreadable, 0o000)
+
+    assert {:error, {:invalid, "the token file could not be read: permission denied"}} =
+             TokenFile.read(unreadable)
+
+    assert {:error, {:invalid, "the token file could not be read: not a directory"}} =
+             TokenFile.read(Path.join(unreadable, "token"))
+  end
+
   test "a file holding anything but one bearer token is invalid", %{tmp_dir: dir} do
     for contents <- [~s({"token": "abc"}), "abc\ndef", "abc def", "abc\r\nX-Injected: 1", "=abc"] do
       assert {:error, {:invalid, message}} = TokenFile.read(write(dir, contents))

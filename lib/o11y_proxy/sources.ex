@@ -5,7 +5,7 @@ defmodule O11yProxy.Sources do
   against one source's adapter state without serializing through its `GenServer`.
   """
 
-  alias O11yProxy.{Caller, Policy}
+  alias O11yProxy.{Backend, Caller, Policy}
   alias O11yProxy.Config.Source
   alias O11yProxy.Sources.StateTable
 
@@ -13,12 +13,6 @@ defmodule O11yProxy.Sources do
   # so tests don't have to wait out the real
   # backoff (`Application.put_env(:o11y_proxy, :breaker, threshold: 2, backoff_ms: 50)`).
   @breaker_defaults [threshold: 5, backoff_ms: 30_000]
-
-  # An adapter that could not get its own credential never reached the backend, so these
-  # say nothing about its health. Counted, they would open the breaker, and the caller
-  # would see "breaker open" for the next 30s instead of what is wrong with the token —
-  # even after the token is fixed.
-  @credential_failures [:credential_unavailable, :credential_invalid]
 
   @doc "Starts one supervised `Sources.Server` per configured source."
   @spec start_all([Source.t()]) :: :ok
@@ -174,7 +168,8 @@ defmodule O11yProxy.Sources do
   `compile/2`/`execute/2` at all, per "fail fast into the errors array rather than
   burning the caller's timeout budget". A successful
   execute closes the breaker; a failure (including a timeout) bumps its failure count,
-  except an adapter failing to get its own credential, which never reached the backend.
+  except the adapter's own credential failing (`O11yProxy.Backend.credential_failure?/1`),
+  which says nothing about the backend.
   """
   @spec run_query(String.t(), O11yProxy.Query.t(), Caller.t(), timeout()) ::
           {:ok,
@@ -220,14 +215,18 @@ defmodule O11yProxy.Sources do
              cursor: Map.get(result, :cursor)
            }}
 
-        {:error, {kind, _detail}} = error when kind in @credential_failures ->
-          error
-
-        {:error, _reason} = error ->
-          record_failure(name)
+        {:error, reason} = error ->
+          count_failure(name, reason)
           error
       end
     end
+  end
+
+  # The adapter's own credential failing says nothing about the backend's health.
+  # Counted, it would open the breaker, and the caller would see "breaker open" for the
+  # next 30s instead of what is wrong with the token, even after it is fixed.
+  defp count_failure(name, reason) do
+    if Backend.credential_failure?(reason), do: :ok, else: record_failure(name)
   end
 
   defp record_failure(name) do

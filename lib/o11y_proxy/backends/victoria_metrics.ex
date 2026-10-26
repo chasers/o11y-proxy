@@ -11,11 +11,12 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   (`/select/<accountID>/prometheus/api/v1/...`) is a config value, not an assumption.
 
   `auth: bearer_file` is for a VictoriaMetrics behind an auth proxy, such as vmauth, that
-  takes short-lived tokens from a broker. The token is reread from `token_file` on every
-  request (`O11yProxy.Backends.TokenFile`), so whatever refreshes the file is all the
-  rotation there is. The token carries the proxy's own identity: the backend enforces the
-  scope it grants the proxy as a whole, and each caller's narrower policy is still
-  enforced here, before the query is compiled.
+  takes short-lived tokens from a broker. The token is reread from `token_file` for every
+  query (`O11yProxy.Backends.TokenFile`), so whatever refreshes the file is all the
+  rotation there is; a call that makes several requests, like `schema/1`, reads it once.
+  The token carries the proxy's own identity: the backend enforces the scope it grants
+  the proxy as a whole, and each caller's narrower policy is still enforced here, before
+  the query is compiled.
   """
 
   @behaviour O11yProxy.Backend
@@ -43,7 +44,7 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
       token_file: [
         type: :string,
         default: "",
-        doc: "for auth: bearer_file, the file holding the token, reread on every request"
+        doc: "for auth: bearer_file, the file holding the token, reread for every query"
       ],
       allow_raw: [type: :boolean, default: false],
       timeout_ms: [type: :pos_integer, default: 30_000],
@@ -52,44 +53,80 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
     ]
   end
 
+  # The credential fields each auth mode reads. Any other one set is refused: it would be
+  # silently ignored, and the credential used instead may be stale, so the operator has to
+  # say which one they meant.
+  @auth_fields %{
+    "none" => [],
+    "basic" => [:username, :password],
+    "bearer" => [:token],
+    "bearer_file" => [:token_file]
+  }
+  @credential_fields [:username, :password, :token, :token_file]
+
   @impl true
   def init(%{auth: "bearer_file", token_file: ""}),
     do: {:error, "auth: bearer_file needs token_file, the path of the file holding the token"}
 
-  # A credential set for another mode would be silently ignored, and the one that is used
-  # instead may be stale; refusing says which one the operator meant to drop.
-  def init(%{auth: "bearer_file", token: token}) when token != "",
-    do: {:error, "auth: bearer_file reads token_file; remove token, which would be ignored"}
-
-  def init(%{auth: auth, token_file: path}) when auth != "bearer_file" and path != "",
-    do: {:error, "token_file is only read with auth: bearer_file, not auth: #{auth}"}
-
   def init(config) do
-    warn_if_unreadable(config)
+    with :ok <- check_auth_fields(config) do
+      warn_if_unreadable(config)
 
-    {:ok,
-     %{
-       url: String.trim_trailing(config.url, "/") <> config.base_path,
-       auth: build_auth(config),
-       # Tests point this at Req.Test; nothing in config sets it.
-       req_options: Application.get_env(:o11y_proxy, :victoriametrics_req_options, []),
-       allow_raw: config.allow_raw,
-       timeout_ms: config.timeout_ms,
-       summary_points: config.summary_points,
-       full_points: config.full_points
-     }}
+      {:ok,
+       %{
+         url: String.trim_trailing(config.url, "/") <> config.base_path,
+         auth: build_auth(config),
+         # Tests point this at Req.Test; nothing in config sets it.
+         req_options: Application.get_env(:o11y_proxy, :victoriametrics_req_options, []),
+         allow_raw: config.allow_raw,
+         timeout_ms: config.timeout_ms,
+         summary_points: config.summary_points,
+         full_points: config.full_points
+       }}
+    end
+  end
+
+  defp check_auth_fields(%{auth: auth} = config) do
+    ignored =
+      for field <- @credential_fields -- Map.fetch!(@auth_fields, auth),
+          Map.get(config, field, "") != "",
+          do: field
+
+    case ignored do
+      [] ->
+        :ok
+
+      fields ->
+        listed = Enum.join(fields, ", ")
+        {:error, "auth: #{auth} does not read #{listed}; remove it, since it would be ignored"}
+    end
   end
 
   # Not a boot failure: whatever writes the file may start after the proxy does, and the
   # source recovers by itself once it has. But a typo in the path looks the same, and
   # would otherwise show only as failing queries.
   defp warn_if_unreadable(%{auth: "bearer_file", token_file: path}) do
-    with {:error, {_kind, reason}} <- TokenFile.read(path) do
-      Logger.warning("victoriametrics token_file #{path}: #{reason}; queries fail until it is")
-    end
+    with {:error, {kind, reason}} <- TokenFile.read(path),
+         do: log_token_failure(path, kind, reason)
   end
 
   defp warn_if_unreadable(_config), do: :ok
+
+  # The operator's view of a token failure, with the path the caller's message leaves out.
+  # Logged at boot and on every failing query, since a file can go bad long after boot.
+  defp log_token_failure(path, :unavailable, reason) do
+    Logger.warning(
+      "victoriametrics token_file #{path}: #{reason}. Queries to this source fail until " <>
+        "whatever writes the file has written it."
+    )
+  end
+
+  defp log_token_failure(path, :invalid, reason) do
+    Logger.warning(
+      "victoriametrics token_file #{path}: #{reason}. Queries to this source fail until the " <>
+        "file or the path in config is fixed."
+    )
+  end
 
   defp build_auth(%{auth: "basic", username: u, password: p}), do: {:basic, "#{u}:#{p}"}
   defp build_auth(%{auth: "bearer", token: t}), do: {:bearer, t}
@@ -244,6 +281,9 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
       {:ok, %{status: 200}} ->
         :ok
 
+      {:ok, %{status: status}} when status in [401, 403] ->
+        rejected(status)
+
       {:ok, %{status: status}} ->
         {:error, {:unhealthy, status}}
 
@@ -266,12 +306,24 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
       {:ok, %{status: 200, body: %{"status" => "error", "error" => reason}}} ->
         {:error, {:victoriametrics_error, reason}}
 
+      {:ok, %{status: status}} when status in [401, 403] ->
+        rejected(status)
+
       {:ok, %{status: status, body: body}} ->
         {:error, {:victoriametrics_error, "HTTP #{status}: #{inspect(body)}"}}
 
       {:error, exception} ->
         {:error, {:victoriametrics_unreachable, Exception.message(exception)}}
     end
+  end
+
+  # An auth proxy turning the proxy away is the credential failing, usually a short-lived
+  # token expiring before its refresh, not the backend: so it stays out of the circuit
+  # breaker, and the caller hears what is wrong. The body is left out; it is the auth
+  # proxy's, and may echo the token's claims.
+  defp rejected(status) do
+    Logger.warning("victoriametrics refused the proxy's credential with HTTP #{status}")
+    {:error, {:credential_rejected, "HTTP #{status}"}}
   end
 
   # The request's own options go last, so nothing in req_options can replace the
@@ -285,18 +337,24 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   # Swaps a token file for the token it holds now. A state that already holds a token
   # passes through, which is what lets one call read the file once.
   #
-  # A token that cannot be read is the proxy's credential failing, not the backend, so it
-  # is `:credential_unavailable` or `:credential_invalid` — which Sources keeps out of the
-  # circuit breaker, so the reason reaches the caller instead of "breaker open".
+  # A token that cannot be read is the proxy's credential failing, not the backend
+  # (`O11yProxy.Backend.credential_failure?/1`), so the reason reaches the caller instead
+  # of "breaker open".
   defp with_token(%{auth: {:bearer_file, path}} = state) do
     case TokenFile.read(path) do
-      {:ok, token} -> {:ok, %{state | auth: {:bearer, token}}}
-      {:error, {:unavailable, reason}} -> {:error, {:credential_unavailable, reason}}
-      {:error, {:invalid, reason}} -> {:error, {:credential_invalid, reason}}
+      {:ok, token} ->
+        {:ok, %{state | auth: {:bearer, token}}}
+
+      {:error, {kind, reason}} ->
+        log_token_failure(path, kind, reason)
+        {:error, {credential_failure(kind), reason}}
     end
   end
 
   defp with_token(state), do: {:ok, state}
+
+  defp credential_failure(:unavailable), do: :credential_unavailable
+  defp credential_failure(:invalid), do: :credential_invalid
 
   defp maybe_put_auth(opts, nil), do: opts
   defp maybe_put_auth(opts, auth), do: Keyword.put(opts, :auth, auth)

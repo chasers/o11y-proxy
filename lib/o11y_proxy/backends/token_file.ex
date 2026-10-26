@@ -15,8 +15,9 @@ defmodule O11yProxy.Backends.TokenFile do
   @max_bytes 64 * 1024
 
   @typedoc """
-  `:unavailable` may fix itself — the file is not written yet, or is mid-refresh.
-  `:invalid` will not: the path names something that is not a token file.
+  `:unavailable` may fix itself: the file is not written yet, or is mid-refresh.
+  `:invalid` will not: the path names something that is not a token file, or that the
+  proxy is not allowed to read.
   """
   @type failure :: {:unavailable | :invalid, String.t()}
 
@@ -72,12 +73,17 @@ defmodule O11yProxy.Backends.TokenFile do
   defp file_kind(:device), do: "a device"
   defp file_kind(_other), do: "a pipe, socket or other special file"
 
-  defp unreadable(reason),
-    do:
-      {:error, {:unavailable, "the token file could not be read: #{:file.format_error(reason)}"}}
+  # Only a file that is not there yet may turn up by itself. Permissions, a path through a
+  # non-directory, a symlink loop: those stay wrong until someone fixes the config.
+  defp unreadable(reason) do
+    kind = if reason == :enoent, do: :unavailable, else: :invalid
+    {:error, {kind, "the token file could not be read: #{:file.format_error(reason)}"}}
+  end
 
   # Empty is what a writer that truncates before writing leaves for a moment, so it is
-  # worth retrying rather than a config mistake.
+  # worth retrying rather than a config mistake. The same writer can also leave half a
+  # token for a moment, which reads as a valid one; the backend refuses it, and that comes
+  # back as `:credential_rejected`, which is kept out of the circuit breaker too.
   defp token(""), do: {:error, {:unavailable, "the token file is empty"}}
 
   defp token(token) do

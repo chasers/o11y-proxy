@@ -150,8 +150,9 @@ defmodule O11yProxy.Remote do
            message: "source #{name} does not support schema discovery"
          }}
 
+      # The same message /v1/query gives for the same failure, rather than a raw term.
       {:error, reason} ->
-        {:error, %{error: "schema_error", message: inspect(reason)}}
+        {:error, %{error: "schema_error", message: ResponseError.build(name, reason).message}}
     end
   end
 

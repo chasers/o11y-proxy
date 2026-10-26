@@ -8,7 +8,7 @@
       "fingerprint": "sha256:0d8ba7666c493b9656d54eb7233d35713ab77afe0d666054625672f3e8627c29",
       "message": "map shape [:canonical, :cardinality, :filterable, :native, :sample_values, :type] appears 5 times; consider a struct or explicit contract if it is domain data",
       "file": "lib/o11y_proxy/backend.ex",
-      "line": 102
+      "line": 128
     },
     {
       "source": "smells",
@@ -53,8 +53,8 @@
     {
       "source": "smells",
       "kind": "fixed_shape_map",
-      "fingerprint": "sha256:28651105e2481d6c0b565f7cb2e37f4e202f89a55da89f07cd23bd6725c84f07",
-      "message": "map shape [:code, :message, :retry_after_ms] appears 15 times; consider a struct or explicit contract if it is domain data",
+      "fingerprint": "sha256:f4475249b05a738dc6c3049e27b4d123b63374d644ae184e7b171a9c4d4c6338",
+      "message": "map shape [:code, :message, :retry_after_ms] appears 16 times; consider a struct or explicit contract if it is domain data",
       "file": "lib/o11y_proxy/response_error.ex",
       "line": 21
     }
