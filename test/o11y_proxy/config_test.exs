@@ -307,7 +307,7 @@ defmodule O11yProxy.ConfigTest do
         spiffe:
           trust_domain: mint.example.com
           paths:
-            - pattern: /aws/{account}/*/role/{role}
+            - patterns: ["/aws/{account}/*/role/{role}"]
               policy_names: ["{account}/{role}", "{role}"]
     """
 
@@ -326,7 +326,7 @@ defmodule O11yProxy.ConfigTest do
     test "compiles a spiffe block, and accepts account-pinned policy names", %{tmp_dir: dir} do
       assert {:ok, config} = load_yaml(dir, spiffe_yaml(@spiffe_oidc_block))
 
-      assert %SPIFFE{trust_domain: "mint.example.com", paths: [_]} =
+      assert %SPIFFE{trust_domain: "mint.example.com", entries: [_]} =
                config.server.oidc.spiffe
 
       assert %{"111122223333/sre" => _, "sre" => _} = config.policies
@@ -364,7 +364,7 @@ defmodule O11yProxy.ConfigTest do
       yaml =
         spiffe_yaml(
           @spiffe_oidc_block <>
-            "        - pattern: /ns/*/sa/{sa}\n" <>
+            "        - patterns: [\"/ns/*/sa/{sa}\"]\n" <>
             "          policy_names: [\"{sa}\"]\n"
         )
 
@@ -378,10 +378,10 @@ defmodule O11yProxy.ConfigTest do
             {@spiffe_oidc_block <> "      region: x\n", "server.oidc.spiffe", "region"},
             {String.replace(@spiffe_oidc_block, ~r/      paths:.*\z/s, "      x: 1\n"),
              "server.oidc.spiffe", "paths"},
-            {String.replace(@spiffe_oidc_block, "- pattern: /aws", "- patern: /aws"),
-             "server.oidc.spiffe.paths", "patern"},
+            {String.replace(@spiffe_oidc_block, "- patterns: [", "- patern: ["),
+             "server.oidc.spiffe.paths[0]", "patern"},
             {String.replace(@spiffe_oidc_block, ~r/\n          policy_names:.*\n/, "\n"),
-             "server.oidc.spiffe.paths", "policy_names"}
+             "server.oidc.spiffe.paths[0]", "policy_names"}
           ] do
         assert {^block, message} = invalid!(dir, spiffe_yaml(yaml))
         assert message =~ complaint
@@ -532,7 +532,7 @@ defmodule O11yProxy.ConfigTest do
                "this snippet is not valid YAML:\n#{snippet}"
 
         spiffe = get_in(yaml, ["server", "oidc", "spiffe"]) || yaml["spiffe"]
-        paths = for path <- spiffe["paths"], do: {path["pattern"], path["policy_names"]}
+        paths = for path <- spiffe["paths"], do: {path["patterns"], path["policy_names"]}
 
         assert {:ok, compiled} = SPIFFE.compile(spiffe["trust_domain"], paths),
                "this snippet's spiffe block does not compile:\n#{snippet}"

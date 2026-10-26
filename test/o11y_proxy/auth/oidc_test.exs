@@ -115,7 +115,7 @@ defmodule O11yProxy.Auth.OIDCTest do
 
   describe "with spiffe: deriving roles from a SPIFFE ID" do
     @trust_domain "mint.example.com"
-    @aws_path {"/aws/{account}/*/role/{role}", ["{account}/{role}", "{role}"]}
+    @aws_path {["/aws/{account}/*/role/{role}"], ["{account}/{role}", "{role}"]}
     @spiffe_oidc %{role_claim: "sub", spiffe: {@trust_domain, [@aws_path]}}
 
     setup context do
@@ -199,7 +199,7 @@ defmodule O11yProxy.Auth.OIDCTest do
 
     @tag oidc: %{
            @spiffe_oidc
-           | spiffe: {@trust_domain, [{"/aws/111122223333/*/role/{role}", ["{role}"]}]}
+           | spiffe: {@trust_domain, [{["/aws/111122223333/*/role/{role}"], ["{role}"]}]}
          }
     test "a pattern pinning the account ignores every other account", %{key: key} do
       assert {:ok, %Caller{policy: %Policy{name: "sre"}}} =
@@ -207,19 +207,6 @@ defmodule O11yProxy.Auth.OIDCTest do
 
       assert {:error, {:forbidden, _}} =
                authenticate(key, OIDC.claims(%{"sub" => sub("444455556666", "sre")}))
-    end
-
-    @tag oidc:
-           Map.merge(@spiffe_oidc, %{
-             default_policy: "readonly",
-             spiffe: {@trust_domain, [@aws_path, {"/aws/*/{role}/role/*", ["{role}"]}]}
-           })
-    test "refuses an ID that two patterns read differently, even with a default",
-         %{key: key} do
-      assert {:error, {:forbidden, message}} =
-               authenticate(key, OIDC.claims(%{"sub" => sub("111122223333", "sre")}))
-
-      assert message =~ "more than one path pattern"
     end
 
     test "refuses rather than crashes when spiffe has no role_claim to read" do

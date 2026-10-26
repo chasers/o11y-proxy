@@ -145,9 +145,10 @@ See [Example 6](#example-6-workload-identity-through-a-token-broker).
 Parsing copies the issuer's ID layout into this config, and the two must then stay in step.
 
 The SPIFFE spec fixes the ID's syntax, not what its path means.
-Each issuer picks its own layout. So you describe it: one entry per layout, each with
+Each issuer picks its own layout. So you describe it, as a list of entries. Each entry has:
 
-- `pattern`: what the ID's path looks like, and which segments to keep.
+- `patterns`: what the ID's path looks like, and which segments to keep.
+  List several when they are the same IDs in different layouts.
 - `policy_names`: how to build policy names from those segments, in order.
 
 ```yaml
@@ -157,16 +158,19 @@ server:
     spiffe:
       trust_domain: broker.example.com
       paths:
-        - pattern: /aws/{account}/{region}/role/{role}
-          policy_names: ["{account}/{role}", "{role}"]
-        - pattern: /aws/{account}/role/{role}     # the same IDs, without a region
+        - patterns:
+            - /aws/{account}/{region}/role/{role}
+            - /aws/{account}/role/{role}  # the same IDs, without a region
           policy_names: ["{account}/{role}", "{role}"]
 ```
+
+Quote a pattern inside `[...]`, like `["/aws/{account}/role/{role}"]`.
+Unquoted, YAML reads its `{` as the start of a map.
 
 With `spiffe:` set, `role_claim` holds one SPIFFE ID, as a string.
 It is not a role or a list of roles.
 
-**`pattern`** is matched one segment at a time:
+**`patterns`** are matched one segment at a time:
 
 | Segment | Matches |
 |---|---|
@@ -179,48 +183,57 @@ It is not a role or a list of roles.
 - A name can appear once per pattern.
 - The names mean nothing to the proxy. `{account}` is just a name you chose.
 
-**`policy_names`** are filled in from that pattern's kept segments:
+**`policy_names`** are filled in from the matching pattern's kept segments:
 
 - `"{account}/{role}"` becomes `111122223333/sre`.
 - Text outside `{}` is kept as is.
-- An entry may only use names its own pattern keeps.
+- Every pattern in the entry must keep every name its `policy_names` use.
 
 How a token is matched:
 
 1. The ID must be a valid SPIFFE ID in `trust_domain`.
    No port, query, fragment, `%` escapes, empty, `.` or `..` segments.
    The scheme and trust domain must be lowercase.
-2. A pattern must match it.
-3. That pattern's `policy_names` are filled in, in order.
+2. A pattern must match it. At most one can: config refuses patterns that overlap.
+3. That entry's `policy_names` are filled in, in order.
 4. The first name with a policy wins. So `111122223333/sre` beats `sre`.
 5. No match uses `default_policy`. Otherwise the caller gets `403`.
    The message shows the ID and the names it gave.
-6. If two patterns match one ID and give different names, the caller gets `403`.
-   Fix the patterns. No guess is made.
-7. A role claim that is not a string gets `403`, even with a `default_policy`.
+6. A role claim that is not a string gets `403`, even with a `default_policy`.
+
+**Patterns must not overlap.**
+Two patterns that could match one ID would give it two readings. So config refuses them.
+
+- `/aws/{account}/{region}/role/{role}` and `/aws/{account}/role/{role}` are fine. Their lengths differ.
+- `/aws/111122223333/*/role/{role}` next to `/aws/{account}/*/role/{role}` is refused.
+  To treat one account differently, use `policy_names` order instead. See below.
 
 **Policy names must not collide.**
 A kept segment is chosen by whoever named the workload.
-So config refuses any two `policy_names` entries that could give two different IDs the same name.
+So config refuses any two `policy_names` that could give two different IDs the same name.
 
 - **Separate every `{name}` with a character no segment can hold.**
   Segments hold letters, digits, `.`, `-` and `_`. So use `/`, `:`, `@` or a space.
   `{account}/{role}` is fine.
   `{account}-{role}` is refused: a role named `111122223333-admin`, in any account, would fill `{role}` to the same name.
-- **Keep different layouts apart with fixed text.**
+- **Keep different entries apart with fixed text.**
   `{role}` for AWS and `{sa}` for Kubernetes are refused together: a service account named `sre` would get the AWS `sre` policy.
+  The same text in two entries is refused too, whatever the `{name}` is called.
   Write `k8s:{sa}` instead.
-- **The same entry under several patterns is allowed.**
-  That is how one issuer's layouts, like with and without a region, say they mean the same thing.
+- **Layouts that mean the same thing go in one entry.**
+  Its patterns then share one `policy_names` list on purpose.
 
 Config checks these at boot:
 
 - Patterns and names are well formed.
-- Every `policy_names` entry uses only names its pattern keeps.
-- No two different entries can produce the same name.
+- Every `policy_names` entry uses only names that every pattern in its entry keeps.
+- No two patterns can match one ID.
+- No two `policy_names`, in one entry or across entries, can produce the same name.
 - Every policy, except `default_policy`, can be produced by some entry.
-  `111122223333:sre` is refused, since no entry above can give it.
+  `111122223333:sre` is refused, since nothing above can give it.
   But `111122223333_sre` is accepted: `{role}` gives it, for a role with that name.
+
+An error names the entry by its position, like `paths[1]`, counting from `0`.
 
 Other layouts are just other config. Istio-style IDs, for example:
 
@@ -228,7 +241,7 @@ Other layouts are just other config. Istio-style IDs, for example:
 spiffe:
   trust_domain: cluster.local
   paths:
-    - pattern: /ns/{namespace}/sa/{sa}
+    - patterns: ["/ns/{namespace}/sa/{sa}"]
       policy_names: ["k8s:{namespace}/{sa}", "k8s:{sa}"]
 ```
 
@@ -239,13 +252,13 @@ spiffe:
 - Anyone who can create a role called `sre` in any account your broker signs for gets it.
 - So keep role-only policies small.
 - Put broad access, like `raw: allow` or `sources: "*"`, on account-pinned policies.
-- Or pin the account in the pattern itself: `/aws/111122223333/*/role/{role}`.
+- Or, if one account is all you take, pin it in the only pattern: `/aws/111122223333/*/role/{role}`.
 
 Don't know the account IDs yet? Start with role-only policies.
 A refused token's `403` message shows the account, so you can pin it later.
 This only works without `default_policy`, since a default means no refusal.
 
-Not sure every ID has the same layout? List one pattern per layout.
+Not sure every ID has the same layout? List every layout's pattern in the entry.
 An ID that matches no pattern gets no role. It is never matched loosely.
 
 ### Key rotation
@@ -689,7 +702,7 @@ server:
     spiffe:
       trust_domain: broker.example.com
       paths:
-        - pattern: /aws/{account}/*/role/{role}
+        - patterns: ["/aws/{account}/*/role/{role}"]
           policy_names: ["{account}/{role}", "{role}"]
 
 policies:

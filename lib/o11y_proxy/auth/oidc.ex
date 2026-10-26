@@ -138,7 +138,7 @@ defmodule O11yProxy.Auth.OIDC do
   defp select_by_spiffe_id(id, path, _config, _spiffe, _policies) when not is_binary(id),
     do: {:error, {:forbidden, "token claim #{path} must be a string holding a SPIFFE ID"}}
 
-  defp select_by_spiffe_id(id, path, config, spiffe, policies) do
+  defp select_by_spiffe_id(id, _path, config, spiffe, policies) do
     case SPIFFE.roles(spiffe, id) do
       {:ok, candidates} ->
         case Enum.find(candidates, &Map.has_key?(policies, &1)) do
@@ -148,9 +148,6 @@ defmodule O11yProxy.Auth.OIDC do
 
       {:none, reason} ->
         default_policy(config, policies, "#{id}, which #{reason}")
-
-      {:error, reason} ->
-        {:error, {:forbidden, "token claim #{path} (#{id}) #{reason}"}}
     end
   end
 

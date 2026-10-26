@@ -88,10 +88,12 @@ defmodule O11yProxy.Config do
   ]
 
   @spiffe_path_schema [
-    pattern: [
-      type: :string,
+    patterns: [
+      type: {:list, :string},
       required: true,
-      doc: "an ID path such as /aws/{account}/*/role/{role}; see O11yProxy.Auth.SPIFFE"
+      doc:
+        "ID paths such as /aws/{account}/*/role/{role}, all meaning the same thing; see " <>
+          "O11yProxy.Auth.SPIFFE"
     ],
     policy_names: [
       type: {:list, :string},
@@ -278,16 +280,29 @@ defmodule O11yProxy.Config do
     end
   end
 
+  # Each entry is its own block, named by index, so an error says which one is wrong —
+  # the same `paths[i]` that `SPIFFE.compile/2` uses for the errors it finds.
   defp spiffe_paths(entries) do
     entries
-    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
-      case validate_block(entry, @spiffe_path_schema, "server.oidc.spiffe.paths") do
-        {:ok, opts} -> {:cont, {:ok, [{opts[:pattern], opts[:policy_names]} | acc]}}
-        error -> {:halt, error}
+    |> Enum.with_index()
+    |> map_ok(fn {entry, index} ->
+      with {:ok, opts} <-
+             validate_block(entry, @spiffe_path_schema, "server.oidc.spiffe.paths[#{index}]"),
+           do: {:ok, {opts[:patterns], opts[:policy_names]}}
+    end)
+  end
+
+  # Maps `fun` over `list`, stopping at the first `{:error, _}`.
+  defp map_ok(list, fun) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
+      case fun.(item) do
+        {:ok, value} -> {:cont, {:ok, [value | acc]}}
+        {:error, _} = error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, paths} -> {:ok, Enum.reverse(paths)}
+      {:ok, values} -> {:ok, Enum.reverse(values)}
       error -> error
     end
   end
@@ -418,19 +433,7 @@ defmodule O11yProxy.Config do
   def validate_block(other, _schema, block_name),
     do: {:error, {:invalid_block_shape, block_name, other}}
 
-  defp build_sources(sources) when is_list(sources) do
-    sources
-    |> Enum.reduce_while({:ok, []}, fn raw, {:ok, acc} ->
-      case build_source(raw) do
-        {:ok, source} -> {:cont, {:ok, [source | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, acc} -> {:ok, Enum.reverse(acc)}
-      error -> error
-    end
-  end
+  defp build_sources(sources) when is_list(sources), do: map_ok(sources, &build_source/1)
 
   defp build_sources(other), do: {:error, {:invalid_sources_shape, other}}
 
