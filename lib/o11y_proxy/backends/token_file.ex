@@ -73,10 +73,13 @@ defmodule O11yProxy.Backends.TokenFile do
   defp file_kind(:device), do: "a device"
   defp file_kind(_other), do: "a pipe, socket or other special file"
 
-  # Only a file that is not there yet may turn up by itself. Permissions, a path through a
-  # non-directory, a symlink loop: those stay wrong until someone fixes the config.
+  # These stay wrong until someone fixes the config: the path names something the proxy
+  # may not read, or cannot name a file at all. Anything else, a file not written yet or
+  # the system briefly out of descriptors or I/O, may clear by itself.
+  @permanent [:eacces, :eperm, :enotdir, :eisdir, :eloop, :enametoolong]
+
   defp unreadable(reason) do
-    kind = if reason == :enoent, do: :unavailable, else: :invalid
+    kind = if reason in @permanent, do: :invalid, else: :unavailable
     {:error, {kind, "the token file could not be read: #{:file.format_error(reason)}"}}
   end
 

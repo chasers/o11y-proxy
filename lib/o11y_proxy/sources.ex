@@ -5,7 +5,7 @@ defmodule O11yProxy.Sources do
   against one source's adapter state without serializing through its `GenServer`.
   """
 
-  alias O11yProxy.{Backend, Caller, Policy}
+  alias O11yProxy.{Backend, Caller, Policy, ResponseError}
   alias O11yProxy.Config.Source
   alias O11yProxy.Sources.StateTable
 
@@ -105,17 +105,18 @@ defmodule O11yProxy.Sources do
     statuses =
       StateTable.all()
       |> Map.new(fn {name, %{backend: backend, state: state}} ->
-        {name, health_status(backend, state)}
+        {name, health_status(name, backend, state)}
       end)
 
     %{sources: statuses}
   end
 
-  defp health_status(backend, state) do
+  # The same message /v1/query gives for the same failure, rather than a raw term.
+  defp health_status(name, backend, state) do
     if function_exported?(backend, :health, 1) do
       case backend.health(state) do
         :ok -> %{status: "ok"}
-        {:error, reason} -> %{status: "error", message: inspect(reason)}
+        {:error, reason} -> %{status: "error", message: ResponseError.build(name, reason).message}
       end
     else
       %{status: "ok"}

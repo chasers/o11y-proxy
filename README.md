@@ -372,20 +372,21 @@ sources:
   grants the proxy as a whole, such as read-only on one tenant. Each caller's policy is
   still enforced by the proxy first ([`docs/authentication.md`](docs/authentication.md)).
   So grant the proxy no more than the widest policy you give any caller.
-- **A missing or empty token file fails the query as `unreachable`**, since it may turn up.
-  So does a token VictoriaMetrics refuses (HTTP 401 or 403), usually one that expired before
-  its refresh.
-- **Anything else fails as `internal`: a config mistake.** That covers a file holding
-  something other than a token, one that is not a regular file, or one the proxy may not
-  read.
+- **A token that may come right fails the query as `unreachable`.** That is a missing or
+  empty file, a brief system error reading it, or a token VictoriaMetrics refuses with HTTP
+  401, usually one that expired before its refresh.
+- **A config mistake fails as `internal`.** That is a file holding something other than a
+  token, one that is not a regular file, one the proxy may not read, or a token accepted
+  but refused with HTTP 403: check the scope the broker grants the proxy.
 - Either way the reason is in the message, nothing is sent without a token, and `/healthz`
   shows the source unhealthy. **None of these count toward the circuit breaker**, since
   the backend itself is fine.
-- **Every token failure is logged as a warning with the path**, including at startup. A
-  file that cannot be read at startup is not refused, since whatever writes it may start
-  after the proxy.
-- A credential field the auth mode does not read is refused, e.g. `token` or `password`
-  with `bearer_file`, since it would be silently ignored.
+- **The token's state is logged with the path when it changes**: when it starts failing,
+  when the failure changes, and when it works again. Not on every request, so a broker
+  outage does not flood the log. A file that cannot be read at startup is not refused,
+  since whatever writes it may start after the proxy.
+- **`token`, `username` or `password` with `bearer_file`, or `token_file` with another
+  mode, is refused**, since it would be silently ignored.
 - The file must hold one bearer token. Surrounding whitespace is ignored.
 
 </details>

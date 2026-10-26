@@ -4,10 +4,10 @@ defmodule O11yProxy.BackendTest do
   alias O11yProxy.{Backend, ResponseError}
 
   describe "credential_failure?/1" do
-    test "is true only for a credential kind with a message" do
+    test "is true for a credential kind, whatever its detail" do
       for kind <- Backend.credential_failure_kinds() do
         assert Backend.credential_failure?({kind, "detail"})
-        refute Backend.credential_failure?({kind, :not_a_message})
+        assert Backend.credential_failure?({kind, :enoent})
       end
 
       refute Backend.credential_failure?({:victoriametrics_unreachable, "detail"})

@@ -40,8 +40,9 @@ defmodule O11yProxy.Backend do
   `O11yProxy.ResponseError` gives each its own message.
   """
   @spec credential_failure?(term()) :: boolean()
-  def credential_failure?({kind, detail}) when kind in @credential_failures and is_binary(detail),
-    do: true
+  # Keyed on the kind alone: a detail of the wrong type is a bug in the adapter, and should
+  # not also open the breaker on a healthy backend.
+  def credential_failure?({kind, _detail}) when kind in @credential_failures, do: true
 
   def credential_failure?(_reason), do: false
 

@@ -51,8 +51,11 @@ defmodule O11yProxy.Backends.TokenFileTest do
     unreadable = write(dir, "token")
     File.chmod!(unreadable, 0o000)
 
-    assert {:error, {:invalid, "the token file could not be read: permission denied"}} =
-             TokenFile.read(unreadable)
+    # Root reads it regardless, as in some CI containers; nothing to check there.
+    if File.read(unreadable) == {:error, :eacces} do
+      assert {:error, {:invalid, "the token file could not be read: permission denied"}} =
+               TokenFile.read(unreadable)
+    end
 
     assert {:error, {:invalid, "the token file could not be read: not a directory"}} =
              TokenFile.read(Path.join(unreadable, "token"))

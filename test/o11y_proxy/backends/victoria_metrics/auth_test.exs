@@ -149,7 +149,8 @@ defmodule O11yProxy.Backends.VictoriaMetrics.AuthTest do
       assert message =~ "auth: bearer_file needs token_file"
     end
 
-    test "refuses any credential field the chosen mode would ignore", %{tmp_dir: dir} do
+    test "refuses a credential field bearer_file would ignore, or a token_file elsewhere",
+         %{tmp_dir: dir} do
       path = token_file(dir, "t")
 
       for {overrides, message} <- [
@@ -159,15 +160,27 @@ defmodule O11yProxy.Backends.VictoriaMetrics.AuthTest do
              "auth: bearer_file does not read password"},
             {[auth: "bearer", token: "t", token_file: path],
              "auth: bearer does not read token_file"},
-            {[auth: "basic", username: "u", token: "t"], "auth: basic does not read token"},
             {[auth: "none", username: "u", token_file: path],
              "auth: none does not read username, token_file"}
           ] do
         assert {:error, refused} = init(overrides)
         assert refused =~ message
       end
+    end
 
-      assert {:ok, _} = init(auth: "basic", username: "u", password: "p")
+    test "only warns about older leftovers, which booted before" do
+      for {overrides, message} <- [
+            {[auth: "none", username: "u", password: "p"], "auth: none does not read username"},
+            {[auth: "basic", username: "u", token: "t"], "auth: basic does not read token"}
+          ] do
+        log = capture_log(fn -> assert {:ok, _} = init(overrides) end)
+        assert log =~ message
+      end
+
+      log =
+        capture_log(fn -> assert {:ok, _} = init(auth: "basic", username: "u", password: "p") end)
+
+      refute log =~ "does not read"
     end
 
     test "starts with an unreadable token_file, but logs a warning", %{tmp_dir: dir} do
@@ -204,26 +217,59 @@ defmodule O11yProxy.Backends.VictoriaMetrics.AuthTest do
       )
     end
 
-    test "is credential_rejected, without the body, and logged", %{tmp_dir: dir} do
-      {:ok, state} = init(auth: "bearer_file", token_file: token_file(dir, "expired"))
+    test "from a token file: 401 may clear, 403 will not; no body, both logged",
+         %{tmp_dir: dir} do
+      path = token_file(dir, "expired")
+      {:ok, state} = init(auth: "bearer_file", token_file: path)
 
       log =
         capture_log(fn ->
           assert {:error, {:credential_rejected, "HTTP 401"}} = VictoriaMetrics.schema(state)
-          assert {:error, {:credential_rejected, "HTTP 403"}} = VictoriaMetrics.health(state)
+          assert {:error, {:credential_invalid, message}} = VictoriaMetrics.health(state)
+          assert message =~ "HTTP 403: the token was accepted but does not grant this request"
         end)
 
-      assert log =~ "refused the proxy's credential with HTTP 401"
+      assert log =~ "refused the token from token_file #{path} with HTTP 401"
+      assert log =~ "refused the request with HTTP 403"
       refute log =~ "secret"
+    end
+
+    test "a static credential refused stays an ordinary backend error" do
+      {:ok, state} = init(auth: "bearer", token: "revoked")
+
+      assert {:error, {:victoriametrics_error, "HTTP 401: " <> _}} = VictoriaMetrics.schema(state)
+      assert {:error, {:unhealthy, 403}} = VictoriaMetrics.health(state)
+
+      {:ok, state} = init([])
+      assert {:error, {:victoriametrics_error, "HTTP 401: " <> _}} = VictoriaMetrics.schema(state)
     end
   end
 
-  test "a token file that goes bad after boot is logged with its path", %{tmp_dir: dir} do
-    path = token_file(dir, "fine")
-    {:ok, state} = init(auth: "bearer_file", token_file: path)
-    File.write!(path, ~s({"not": "a token"}))
+  describe "logging" do
+    test "a token file that goes bad after boot is logged with its path", %{tmp_dir: dir} do
+      path = token_file(dir, "fine")
+      {:ok, state} = init(auth: "bearer_file", token_file: path)
+      File.write!(path, ~s({"not": "a token"}))
 
-    log = capture_log(fn -> assert {:error, _} = VictoriaMetrics.schema(state) end)
-    assert log =~ "victoriametrics token_file #{path}: the token file does not hold"
+      log = capture_log(fn -> assert {:error, _} = VictoriaMetrics.schema(state) end)
+      assert log =~ "victoriametrics token_file #{path}: the token file does not hold"
+    end
+
+    test "logs when the token's state changes, not on every request", %{tmp_dir: dir} do
+      path = Path.join(dir, "token")
+      {{:ok, state}, boot_log} = with_log(fn -> init(auth: "bearer_file", token_file: path) end)
+      assert boot_log =~ "no such file or directory"
+
+      log =
+        capture_log(fn ->
+          for _ <- 1..3, do: VictoriaMetrics.schema(state)
+          File.write!(path, "fresh")
+          for _ <- 1..3, do: VictoriaMetrics.schema(state)
+        end)
+
+      assert log =~ "token_file #{path} works again"
+      refute log =~ "no such file or directory"
+      assert [_, _] = String.split(log, "works again")
+    end
   end
 end

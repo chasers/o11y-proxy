@@ -53,9 +53,8 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
     ]
   end
 
-  # The credential fields each auth mode reads. Any other one set is refused: it would be
-  # silently ignored, and the credential used instead may be stale, so the operator has to
-  # say which one they meant.
+  # The credential fields each auth mode reads. Any other one set would be silently
+  # ignored, and the credential used instead may be stale.
   @auth_fields %{
     "none" => [],
     "basic" => [:username, :password],
@@ -76,6 +75,8 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
        %{
          url: String.trim_trailing(config.url, "/") <> config.base_path,
          auth: build_auth(config),
+         # Set only for auth: bearer_file, where the token is refreshed by something else.
+         token_file: if(config.auth == "bearer_file", do: config.token_file),
          # Tests point this at Req.Test; nothing in config sets it.
          req_options: Application.get_env(:o11y_proxy, :victoriametrics_req_options, []),
          allow_raw: config.allow_raw,
@@ -92,13 +93,21 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
           Map.get(config, field, "") != "",
           do: field
 
-    case ignored do
-      [] ->
+    listed = Enum.join(ignored, ", ")
+    message = "auth: #{auth} does not read #{listed}; remove it, since it would be ignored"
+
+    # Refused where bearer_file is involved, which is new, so no config that booted before
+    # breaks: a stale token beside a token file would otherwise be what is sent. Older
+    # leftovers, like a username under auth: none, did boot, so they are only warned about.
+    cond do
+      ignored == [] ->
         :ok
 
-      fields ->
-        listed = Enum.join(fields, ", ")
-        {:error, "auth: #{auth} does not read #{listed}; remove it, since it would be ignored"}
+      auth == "bearer_file" or :token_file in ignored ->
+        {:error, message}
+
+      true ->
+        Logger.warning("victoriametrics #{message}")
     end
   end
 
@@ -106,25 +115,56 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   # source recovers by itself once it has. But a typo in the path looks the same, and
   # would otherwise show only as failing queries.
   defp warn_if_unreadable(%{auth: "bearer_file", token_file: path}) do
-    with {:error, {kind, reason}} <- TokenFile.read(path),
-         do: log_token_failure(path, kind, reason)
+    with {:error, failure} <- TokenFile.read(path), do: report_token(path, failure)
   end
 
   defp warn_if_unreadable(_config), do: :ok
 
-  # The operator's view of a token failure, with the path the caller's message leaves out.
-  # Logged at boot and on every failing query, since a file can go bad long after boot.
-  defp log_token_failure(path, :unavailable, reason) do
+  # The operator's view of the token, with the path the caller's message leaves out.
+  # Logged when it changes rather than per request: during a broker outage, every query,
+  # health check and schema lookup fails the same way, and the first says it all. Kept in
+  # :persistent_term, which is costly to write but is written only on those changes.
+  defp report_token(nil, _outcome), do: :ok
+
+  defp report_token(path, outcome) do
+    key = {__MODULE__, :token_outcome, path}
+
+    if :persistent_term.get(key, :ok) != outcome do
+      :persistent_term.put(key, outcome)
+      log_token(path, outcome)
+    end
+
+    :ok
+  end
+
+  defp log_token(path, :ok),
+    do: Logger.info("victoriametrics token_file #{path} works again")
+
+  defp log_token(path, {:unavailable, reason}) do
     Logger.warning(
       "victoriametrics token_file #{path}: #{reason}. Queries to this source fail until " <>
         "whatever writes the file has written it."
     )
   end
 
-  defp log_token_failure(path, :invalid, reason) do
+  defp log_token(path, {:invalid, reason}) do
     Logger.warning(
       "victoriametrics token_file #{path}: #{reason}. Queries to this source fail until the " <>
         "file or the path in config is fixed."
+    )
+  end
+
+  defp log_token(path, {:refused, 401}) do
+    Logger.warning(
+      "victoriametrics refused the token from token_file #{path} with HTTP 401. Queries to " <>
+        "this source fail until whatever writes the file writes a fresh one."
+    )
+  end
+
+  defp log_token(path, {:refused, 403}) do
+    Logger.warning(
+      "victoriametrics accepted the token from token_file #{path} but refused the request " <>
+        "with HTTP 403. Check the scope the broker grants the proxy."
     )
   end
 
@@ -272,17 +312,18 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
   # any other path, and a token that cannot be read is worth reporting as unhealthy.
   def health(state) do
     with {:ok, opts} <- request_options(state, receive_timeout: state.timeout_ms) do
-      health_status(Req.get(state.url <> "/health", opts))
+      health_status(state, Req.get(state.url <> "/health", opts))
     end
   end
 
-  defp health_status(response) do
+  defp health_status(%{token_file: path} = state, {:ok, %{status: status}})
+       when is_binary(path) and status in [401, 403],
+       do: refused(state, status)
+
+  defp health_status(state, response) do
     case response do
       {:ok, %{status: 200}} ->
-        :ok
-
-      {:ok, %{status: status}} when status in [401, 403] ->
-        rejected(status)
+        report_token(state.token_file, :ok)
 
       {:ok, %{status: status}} ->
         {:error, {:unhealthy, status}}
@@ -294,20 +335,22 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
 
   defp get_json(state, path, params) do
     with {:ok, opts} <- request_options(state, params: params, receive_timeout: state.timeout_ms) do
-      json_result(Req.get(state.url <> path, opts))
+      json_result(state, Req.get(state.url <> path, opts))
     end
   end
 
-  defp json_result(response) do
+  defp json_result(%{token_file: path} = state, {:ok, %{status: status}})
+       when is_binary(path) and status in [401, 403],
+       do: refused(state, status)
+
+  defp json_result(state, response) do
     case response do
       {:ok, %{status: 200, body: %{"status" => "success"} = body}} ->
+        report_token(state.token_file, :ok)
         {:ok, body}
 
       {:ok, %{status: 200, body: %{"status" => "error", "error" => reason}}} ->
         {:error, {:victoriametrics_error, reason}}
-
-      {:ok, %{status: status}} when status in [401, 403] ->
-        rejected(status)
 
       {:ok, %{status: status, body: body}} ->
         {:error, {:victoriametrics_error, "HTTP #{status}: #{inspect(body)}"}}
@@ -317,13 +360,25 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
     end
   end
 
-  # An auth proxy turning the proxy away is the credential failing, usually a short-lived
-  # token expiring before its refresh, not the backend: so it stays out of the circuit
-  # breaker, and the caller hears what is wrong. The body is left out; it is the auth
-  # proxy's, and may echo the token's claims.
-  defp rejected(status) do
-    Logger.warning("victoriametrics refused the proxy's credential with HTTP #{status}")
-    {:error, {:credential_rejected, "HTTP #{status}"}}
+  # Only for a token from a file, which something else refreshes: there a 401 is what it
+  # usually is behind a broker, a token that expired before the next one arrived. A
+  # refused static credential stays refused, so for the other modes it is an ordinary
+  # backend error, counted toward the breaker like before. A 403 is a token accepted
+  # without the grant for this request, which no refresh fixes. Both stay out of the
+  # breaker, since the backend is fine. The body is left out: it is the auth proxy's, and
+  # may echo the token's claims.
+  defp refused(state, 401) do
+    report_token(state.token_file, {:refused, 401})
+    {:error, {:credential_rejected, "HTTP 401"}}
+  end
+
+  defp refused(state, 403) do
+    report_token(state.token_file, {:refused, 403})
+
+    {:error,
+     {:credential_invalid,
+      "HTTP 403: the token was accepted but does not grant this request; check the scope " <>
+        "the token broker grants the proxy"}}
   end
 
   # The request's own options go last, so nothing in req_options can replace the
@@ -345,8 +400,8 @@ defmodule O11yProxy.Backends.VictoriaMetrics do
       {:ok, token} ->
         {:ok, %{state | auth: {:bearer, token}}}
 
-      {:error, {kind, reason}} ->
-        log_token_failure(path, kind, reason)
+      {:error, {kind, reason} = failure} ->
+        report_token(path, failure)
         {:error, {credential_failure(kind), reason}}
     end
   end
