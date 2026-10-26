@@ -83,7 +83,7 @@ defmodule O11yProxy.Config do
     paths: [
       type: {:list, :any},
       required: true,
-      doc: "one entry per ID layout, each a pattern and its policy_names"
+      doc: "entries of ID patterns that mean the same thing, each with its policy_names"
     ]
   ]
 
@@ -292,13 +292,12 @@ defmodule O11yProxy.Config do
     end)
   end
 
-  # Maps `fun` over `list`, stopping at the first `{:error, _}`.
   defp map_ok(list, fun) do
     list
     |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
       case fun.(item) do
         {:ok, value} -> {:cont, {:ok, [value | acc]}}
-        {:error, _} = error -> {:halt, error}
+        error -> {:halt, error}
       end
     end)
     |> case do

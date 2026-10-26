@@ -222,10 +222,14 @@ So config refuses any two `policy_names` that could give two different IDs the s
   Write `k8s:{sa}` instead.
 - **Layouts that mean the same thing go in one entry.**
   Its patterns then share one `policy_names` list on purpose.
+  They must have the same fixed segments, in the same order.
+  `/aws/{account}/{region}/role/{role}` and `/aws/{account}/role/{role}` can share an entry: both are `aws` ... `role`.
+  `/aws/{account}/role/{role}` and `/k8s/{ns}/sa/{role}` cannot, so grouping is no way around the rule above.
 
 Config checks these at boot:
 
 - Patterns and names are well formed.
+- Patterns in one entry have the same fixed segments, in the same order.
 - Every `policy_names` entry uses only names that every pattern in its entry keeps.
 - No two patterns can match one ID.
 - No two `policy_names`, in one entry or across entries, can produce the same name.

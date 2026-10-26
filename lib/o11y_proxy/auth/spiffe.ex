@@ -19,6 +19,8 @@ defmodule O11yProxy.Auth.SPIFFE do
   kept apart at compile time, so a mistake fails at boot rather than as a `403` or as
   the wrong policy:
 
+    * patterns in one entry must have the same fixed segments in the same order, so an
+      entry cannot quietly join two kinds of ID under one set of names;
     * no two patterns may match the same ID, so an ID has at most one reading;
     * no two different templates, in one entry or across entries, may produce the same
       name. A captured segment is chosen by whoever named the workload, so otherwise a
@@ -93,10 +95,32 @@ defmodule O11yProxy.Auth.SPIFFE do
   defp compile_entry(sources, names) do
     with {:ok, patterns} <- map_ok(sources, &compile_path/1),
          {:ok, templates} <- map_ok(names, &compile_template/1),
+         :ok <- check_same_kind(sources, patterns),
          :ok <- check_filled(sources, patterns, names, templates) do
       {:ok, {patterns, templates}}
     end
   end
+
+  # The patterns in one entry share its names unchecked, so they must be layouts of one
+  # kind of ID. What an ID means is the operator's, but the fixed segments are the part
+  # of a layout that says which kind it is — aws/role against k8s/sa — so they must
+  # agree. Without this, grouping would be a way around the template collision check.
+  defp check_same_kind([first | sources], [pattern | patterns]) do
+    kind = literals(pattern)
+
+    case Enum.find(Enum.zip(sources, patterns), fn {_source, p} -> literals(p) != kind end) do
+      nil ->
+        :ok
+
+      {other, _pattern} ->
+        {:error,
+         "groups patterns #{inspect(first)} and #{inspect(other)}, whose fixed segments " <>
+           "differ, so they are not layouts of the same IDs. Give each its own entry, " <>
+           "with policy_names that differ in fixed text"}
+    end
+  end
+
+  defp literals(pattern), do: for({:literal, segment} <- pattern, do: segment)
 
   # Whichever of an entry's patterns matches, every template has to be fillable from it.
   defp check_filled(sources, patterns, names, templates) do
@@ -117,8 +141,7 @@ defmodule O11yProxy.Auth.SPIFFE do
     end
   end
 
-  # Maps `fun` over `list`, stopping at the first `{:error, _}`. Config-sized lists only,
-  # so plain recursion is fine.
+  # Config-sized lists only, so plain recursion is fine.
   defp map_ok([], _fun), do: {:ok, []}
 
   defp map_ok([item | rest], fun) do
@@ -180,25 +203,31 @@ defmodule O11yProxy.Auth.SPIFFE do
 
   defp check_patterns_disjoint(entries, compiled) do
     sourced =
-      for {{sources, _names}, {patterns, _templates}} <- Enum.zip(entries, compiled),
-          pair <- Enum.zip(sources, patterns),
-          do: pair
+      for {{{sources, _names}, {patterns, _templates}}, index} <-
+            Enum.with_index(Enum.zip(entries, compiled)),
+          {source, pattern} <- Enum.zip(sources, patterns),
+          do: {{index, source}, pattern}
 
-    clashes =
-      for {{a, pa}, i} <- Enum.with_index(sourced),
-          {b, pb} <- Enum.drop(sourced, i + 1),
-          patterns_overlap?(pa, pb),
-          do: {a, b}
-
-    case clashes do
-      [] ->
+    case first_clash(sourced, &patterns_overlap?/2) do
+      nil ->
         :ok
 
-      [{a, b} | _] ->
+      {{ia, a}, {ib, b}} ->
         {:error,
-         "patterns #{inspect(a)} and #{inspect(b)} can both match one ID, which would " <>
-           "then have two readings. Make them differ in a fixed segment, or keep one"}
+         "pattern #{inspect(a)} in paths[#{ia}] and #{inspect(b)} in paths[#{ib}] can " <>
+           "both match one ID, which would then have two readings. Make them differ in a " <>
+           "fixed segment, or keep one"}
     end
+  end
+
+  # The first pair, in list order, whose compiled forms `clash?` says cannot coexist.
+  # Quadratic, but over config-sized lists, and it reports the earliest pair the operator
+  # wrote rather than an arbitrary one.
+  defp first_clash(sourced, clash?) do
+    pairs =
+      for {a, next} <- Enum.with_index(sourced, 1), b <- Enum.drop(sourced, next), do: {a, b}
+
+    Enum.find_value(pairs, fn {{a, ca}, {b, cb}} -> if clash?.(ca, cb), do: {a, b} end)
   end
 
   # -- policy_names templates ------------------------------------------------------------
@@ -283,24 +312,23 @@ defmodule O11yProxy.Auth.SPIFFE do
           uniq: true,
           do: {{index, name}, template}
 
-    clashes =
-      for {{a, ta}, i} <- Enum.with_index(sourced),
-          {b, tb} <- Enum.drop(sourced, i + 1),
-          overlap?(ta, tb),
-          do: {a, b}
-
-    case clashes do
-      [] ->
+    case first_clash(sourced, &overlap?/2) do
+      nil ->
         :ok
 
-      [{{ia, a}, {ib, b}} | _] ->
+      {{ia, a}, {ib, b}} ->
         {:error,
          "policy_names #{inspect(a)} in paths[#{ia}] and #{inspect(b)} in paths[#{ib}] " <>
            "can produce the same policy name from different IDs. Make them differ in " <>
-           "their fixed text, e.g. with a prefix such as aws: or k8s:. If the IDs mean " <>
-           "the same thing, list their patterns under one entry instead"}
+           "their fixed text, e.g. with a prefix such as aws: or k8s:" <> regroup_hint(ia, ib)}
     end
   end
+
+  # Both in one entry, the IDs already share a list, so regrouping is no fix.
+  defp regroup_hint(index, index), do: ""
+
+  defp regroup_hint(_ia, _ib),
+    do: ". If the IDs mean the same thing, list their patterns under one entry instead"
 
   # Whether two token lists can produce one string. A capture is exactly one whole
   # segment run, so it lines up with a capture or a segment literal, never with `:other`

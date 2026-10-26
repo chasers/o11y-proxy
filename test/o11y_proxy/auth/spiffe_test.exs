@@ -185,7 +185,10 @@ defmodule O11yProxy.Auth.SPIFFETest do
         assert compile_error([left, right]) =~ "can produce the same policy name"
       end
 
-      assert compile_error([{["/{a}/{b}"], ["{a}", "{b}"]}]) =~ "can produce the same policy name"
+      # Both in one entry: regrouping is no fix, so the message must not suggest it.
+      message = compile_error([{["/{a}/{b}"], ["{a}", "{b}"]}])
+      assert message =~ ~s("{a}" in paths[0] and "{b}" in paths[0] can produce the same)
+      refute message =~ "under one entry"
     end
 
     test "accepts templates kept apart by fixed text" do
@@ -218,6 +221,21 @@ defmodule O11yProxy.Auth.SPIFFETest do
       assert message =~ "list their patterns under one entry"
     end
 
+    test "refuses grouping patterns whose fixed segments differ" do
+      # Otherwise one entry could join AWS roles and Kubernetes service accounts under
+      # "{role}", which the template check refuses across entries.
+      for patterns <- [
+            ["/aws/{account}/role/{role}", "/k8s/{ns}/sa/{role}"],
+            ["/aws/{account}/role/{role}", "/aws/{account}/sso/{role}"],
+            ["/aws/role/{role}", "/role/aws/{role}"]
+          ] do
+        [first, second] = patterns
+
+        assert compile_error([{patterns, ["{role}"]}]) =~
+                 ~s(paths[0] groups patterns #{inspect(first)} and #{inspect(second)})
+      end
+    end
+
     test "needs every template to be fillable from every pattern in its entry" do
       message =
         compile_error([
@@ -241,6 +259,9 @@ defmodule O11yProxy.Auth.SPIFFETest do
           ] do
         assert compile_error(entries) =~ "can both match one ID"
       end
+
+      assert compile_error([@aws, {["/k8s/{a}"], ["k8s:{a}"]}, {["/k8s/{b}"], ["x:{b}"]}]) =~
+               ~s(pattern "/k8s/{a}" in paths[1] and "/k8s/{b}" in paths[2] can both match)
     end
 
     test "accepts patterns kept apart by a fixed segment or by length" do
