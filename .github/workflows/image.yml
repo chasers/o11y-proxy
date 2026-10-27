@@ -1,0 +1,135 @@
+name: Publish container image
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build the image from (e.g. v0.5.0)
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 'version: "' mix.exs | sed 's/.*version: "\([^"]*\)".*/\1/')
+          if [ "v$version" != "$TAG" ]; then
+            echo "mix.exs at $TAG has version $version, expected ${TAG#v}" >&2
+            exit 1
+          fi
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tags="$image:$version"
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          if [ "$latest" = "$TAG" ]; then
+            tags="$tags,$image:latest"
+          fi
+          {
+            echo "version=$version"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "tags=$tags"
+          } >> "$GITHUB_OUTPUT"
+          echo "will push $tags"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the linux/amd64 image for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: o11y-proxy:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image read-only as UID 1000, including an s3 query
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          cp -R test/fixtures/s3 "$workdir/fixtures"
+          cat > "$workdir/o11y.yaml" <<'YAML'
+          server:
+            bind: 0.0.0.0
+            port: 4000
+            auth: token
+            distribution: false
+          sources:
+            - name: archive
+              backend: s3
+              signal: logs
+              uri: /etc/o11y-proxy/fixtures/logs/**/*.parquet
+              format: parquet
+              mapping:
+                timestamp: ts
+                severity: level
+                body: message
+                service: service
+                attributes: attrs
+              hints:
+                partition_key: ts
+                hive_date_column: dt
+          YAML
+          chmod -R a+rX "$workdir"
+          docker run -d --name smoke --read-only --tmpfs /tmp --user 1000:1000 \
+            -e O11Y_PROXY_TOKEN=smoke -v "$workdir:/etc/o11y-proxy:ro" -p 4000:4000 \
+            o11y-proxy:smoke
+          trap 'docker logs smoke; docker rm -f smoke' EXIT
+
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:4000/healthz | grep -q '"archive"' && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:4000/healthz \
+            || { echo "image never answered on /healthz" >&2; exit 1; }
+
+          curl -sf -H 'authorization: Bearer smoke' http://127.0.0.1:4000/v1/sources \
+            | grep -q '"archive"' || { echo "/v1/sources did not list archive" >&2; exit 1; }
+
+          body=$(curl -sf -H 'authorization: Bearer smoke' http://127.0.0.1:4000/v1/query \
+            -H 'content-type: application/json' \
+            -d '{"sources":["archive"],"signal":"logs","from":"2026-09-16T00:00:00Z","to":"2026-09-17T00:00:00Z","mode":"full","limit":2}')
+          echo "$body"
+          echo "$body" | grep -q 'payments-db connection refused' \
+            || { echo "DuckDB did not answer inside the image" >&2; exit 1; }
+          echo "image booted read-only and DuckDB answered"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push linux/amd64 and linux/arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.revision }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

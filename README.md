@@ -288,6 +288,46 @@ server:
 
 ---
 
+## Container image
+
+Every release also publishes a container image for `linux/amd64` and `linux/arm64`:
+
+```bash
+docker pull ghcr.io/chasers/o11y-proxy:0.5.0    # or :latest
+```
+
+The image runs the release tarball with `bin/o11y_proxy start`. It is the server only.
+There is no one-shot CLI in it.
+
+- It reads its config from `O11Y_PROXY_CONFIG`. The default is `/etc/o11y-proxy/o11y.yaml`.
+- It listens on port 4000. Set `bind: 0.0.0.0` and turn on auth, or nothing outside the
+  container can reach it.
+- It runs as UID and GID 1000.
+- It works with a read-only root filesystem. Mount a writable `/tmp`. `HOME`, the release
+  temp files, crash dumps and DuckDB's extensions all go there.
+- Erlang distribution is off (`RELEASE_DISTRIBUTION=none`). Also set
+  `distribution: false` in the config, since there is no CLI to talk to.
+
+```yaml
+server:
+  bind: 0.0.0.0
+  port: 4000
+  auth: token
+  distribution: false
+sources: []
+```
+
+```bash
+docker run --read-only --tmpfs /tmp -p 4000:4000 \
+  -e O11Y_PROXY_TOKEN=... \
+  -v "$PWD/o11y.yaml:/etc/o11y-proxy/o11y.yaml:ro" \
+  ghcr.io/chasers/o11y-proxy:latest
+```
+
+To build it yourself, run `docker build -t o11y-proxy .` from the repo root.
+
+---
+
 ## Config
 
 o11y-proxy reads the first file it finds:
@@ -521,7 +561,9 @@ tarball is native by construction. Build your own with `MIX_ENV=prod mix release
    returns 404, which is why we pin 27.3.4.16.
 
 Releases are automatic. Bump `version:` in `mix.exs`, merge to `main`, and CI builds the
-binaries, tests them, and publishes the release.
+binaries, tests them, and publishes the release. It then pushes the container image. To
+push the image again for an existing tag, run the `Publish container image` workflow by
+hand with that tag.
 
 </details>
 

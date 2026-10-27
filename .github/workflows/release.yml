@@ -1,7 +1,7 @@
 name: Publish release binaries
 
 # Two ways in, both ending in the same place — binaries built, smoke-tested, and attached
-# to a `v<version>` release:
+# to a `v<version>` release, then the container image pushed to GHCR by `image.yml`:
 #
 #   * **a version bump landing on `main`** (the normal path). Bumping `version:` in
 #     `mix.exs` is the whole ritual; this creates the release and builds it.
@@ -593,3 +593,13 @@ jobs:
           set -euo pipefail
           ls -la dist/
           gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  image:
+    needs: [resolve, publish]
+    if: needs.resolve.outputs.build == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
