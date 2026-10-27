@@ -34,11 +34,12 @@ generic. `docs/authentication.md` is the user-facing reference.
   rule — no `String.to_atom` — and the reasoning is in the file. Add `layers:` and
   forbidden `deps:` there as boundaries appear.
 - Use `Req` for HTTP. Every adapter already does; don't introduce a second client.
-- **The pinned toolchain is load-bearing.** `.tool-versions`, `.github/workflows/ci.yml`
-  and `.github/workflows/release.yml` must agree, and OTP must be a version the Beam
-  Machine CDN publishes a precompiled ERTS for — Burrito cannot build a single-file binary
-  otherwise. 27.3.4.17 exists upstream and 404s there, which is why we're on 27.3.4.16.
-  Bumping any one of those three files alone breaks the release build, not CI, so the
+- **The pinned toolchain is load-bearing.** `.tool-versions`, `.github/workflows/ci.yml`,
+  `.github/workflows/release.yml` and the `Dockerfile` must agree, and OTP must be a
+  version the Beam Machine CDN publishes a precompiled ERTS for — Burrito cannot build a
+  single-file binary otherwise. 27.3.4.17 exists upstream and 404s there, which is why
+  we're on 27.3.4.16. The `Dockerfile` also needs a matching `hexpm/elixir` builder tag.
+  Bumping any one of those four files alone breaks the release build, not CI, so the
   breakage shows up late.
 
 ## Understanding the codebase

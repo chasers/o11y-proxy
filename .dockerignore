@@ -1,0 +1,7 @@
+*
+!mix.exs
+!mix.lock
+!config/
+!lib/
+!priv/
+priv/plts/

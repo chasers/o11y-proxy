@@ -18,7 +18,7 @@ mix test          # everything that needs no live backend
 
 Those versions are not free to bump: OTP must be one the Beam Machine CDN publishes a
 precompiled ERTS for, or Burrito cannot build the single-file binaries. If you change
-one of `.tool-versions`, `ci.yml`, or `release.yml`, change all three.
+one of `.tool-versions`, `ci.yml`, `release.yml`, or the `Dockerfile`, change all four.
 
 ## Quality gate — run before opening a PR
 
