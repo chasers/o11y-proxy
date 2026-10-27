@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "o11y-proxy",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "description": "One HTTP+JSON interface over Sentry, ClickHouse, VictoriaMetrics, and object storage queried with DuckDB for logs, metrics, traces and errors. Also available as a CLI (`o11y-proxy --help`), which speaks to the same core and returns the same bodies. When the server runs with `auth: token` or `auth: oidc`, every route except /healthz and /openapi.json needs an `Authorization: Bearer <token>` header; under `auth: oidc` a role policy can further limit which sources and filters a caller may use, and refusals are 403 with a message naming what to change."
   },
   "servers": [
