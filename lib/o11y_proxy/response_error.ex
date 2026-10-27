@@ -58,19 +58,19 @@ defmodule O11yProxy.ResponseError do
   end
 
   defp shape({:invalid_raw_query, detail}) do
-    %{code: "invalid_query", message: "invalid raw query: #{detail}", retry_after_ms: nil}
+    %{code: "invalid_query", message: "invalid raw query: #{text(detail)}", retry_after_ms: nil}
   end
 
   defp shape({:raw_not_allowed, detail}) do
-    %{code: "invalid_query", message: detail, retry_after_ms: nil}
+    %{code: "invalid_query", message: text(detail), retry_after_ms: nil}
   end
 
   defp shape({:forbidden, detail}) do
-    %{code: "forbidden", message: detail, retry_after_ms: nil}
+    %{code: "forbidden", message: text(detail), retry_after_ms: nil}
   end
 
   defp shape({:invalid_query, detail}) do
-    %{code: "invalid_query", message: to_string(detail), retry_after_ms: nil}
+    %{code: "invalid_query", message: text(detail), retry_after_ms: nil}
   end
 
   defp shape({unreachable, detail})
@@ -80,7 +80,36 @@ defmodule O11yProxy.ResponseError do
               :sentry_unreachable,
               :s3_unreachable
             ] do
-    %{code: "unreachable", message: to_string(detail), retry_after_ms: nil}
+    %{code: "unreachable", message: text(detail), retry_after_ms: nil}
+  end
+
+  # The proxy's own credential for the source failed, not the source
+  # (`O11yProxy.Backend.credential_failure?/1`). A missing token may turn up and a refused
+  # one is usually expired before its refresh, so both are `unreachable` like any outage; a
+  # malformed one is a config mistake retrying will not fix, which `internal` tells the
+  # caller.
+  defp shape({:credential_unavailable, detail}) do
+    %{
+      code: "unreachable",
+      message: "no credential for this source: #{text(detail)}",
+      retry_after_ms: nil
+    }
+  end
+
+  defp shape({:credential_invalid, detail}) do
+    %{
+      code: "internal",
+      message: "this source's credential is misconfigured: #{text(detail)}",
+      retry_after_ms: nil
+    }
+  end
+
+  defp shape({:credential_rejected, detail}) do
+    %{
+      code: "unreachable",
+      message: "the source refused the proxy's credential: #{text(detail)}",
+      retry_after_ms: nil
+    }
   end
 
   defp shape(:not_found) do
@@ -90,4 +119,10 @@ defmodule O11yProxy.ResponseError do
   defp shape(reason) do
     %{code: "internal", message: inspect(reason), retry_after_ms: nil}
   end
+
+  # Every message that carries a detail goes through here. Details reaching /healthz come
+  # from any adapter's health/1, and one that is not a string must not take every
+  # source's status down with it, or reach a caller as a term JSON cannot encode.
+  defp text(detail) when is_binary(detail), do: detail
+  defp text(detail), do: inspect(detail)
 end

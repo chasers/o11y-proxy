@@ -5,7 +5,7 @@ defmodule O11yProxy.Sources do
   against one source's adapter state without serializing through its `GenServer`.
   """
 
-  alias O11yProxy.{Caller, Policy}
+  alias O11yProxy.{Backend, Caller, Policy, ResponseError}
   alias O11yProxy.Config.Source
   alias O11yProxy.Sources.StateTable
 
@@ -69,8 +69,9 @@ defmodule O11yProxy.Sources do
     * `:max_age_ms` — reuse a result at most this old instead of checking every backend
       again. `/healthz` is open when auth is on, so without this anyone who can reach the
       port could make the proxy hit every backend as fast as they can send requests.
-    * `:status_only` — drop each source's `message`, which is `inspect/1` of the
-      backend's error and can carry hostnames and URLs. For callers who sent no token.
+    * `:status_only` — drop each source's `message`, the same text `/v1/query` gives for
+      the backend's error (`O11yProxy.ResponseError`), which can carry hostnames and URLs.
+      For callers who sent no token.
   """
   @spec healthz(keyword()) :: %{sources: %{optional(String.t()) => map()}}
   def healthz(opts \\ []) do
@@ -105,17 +106,18 @@ defmodule O11yProxy.Sources do
     statuses =
       StateTable.all()
       |> Map.new(fn {name, %{backend: backend, state: state}} ->
-        {name, health_status(backend, state)}
+        {name, health_status(name, backend, state)}
       end)
 
     %{sources: statuses}
   end
 
-  defp health_status(backend, state) do
+  # The same message /v1/query gives for the same failure, rather than a raw term.
+  defp health_status(name, backend, state) do
     if function_exported?(backend, :health, 1) do
       case backend.health(state) do
         :ok -> %{status: "ok"}
-        {:error, reason} -> %{status: "error", message: inspect(reason)}
+        {:error, reason} -> %{status: "error", message: ResponseError.build(name, reason).message}
       end
     else
       %{status: "ok"}
@@ -167,7 +169,9 @@ defmodule O11yProxy.Sources do
   fails fast with `{:error, {:circuit_open, retry_after_ms}}` without touching
   `compile/2`/`execute/2` at all, per "fail fast into the errors array rather than
   burning the caller's timeout budget". A successful
-  execute closes the breaker; a failure (including a timeout) bumps its failure count.
+  execute closes the breaker; a failure (including a timeout) bumps its failure count,
+  except the adapter's own credential failing (`O11yProxy.Backend.credential_failure?/1`),
+  which says nothing about the backend.
   """
   @spec run_query(String.t(), O11yProxy.Query.t(), Caller.t(), timeout()) ::
           {:ok,
@@ -213,11 +217,18 @@ defmodule O11yProxy.Sources do
              cursor: Map.get(result, :cursor)
            }}
 
-        {:error, _reason} = error ->
-          record_failure(name)
+        {:error, reason} = error ->
+          count_failure(name, reason)
           error
       end
     end
+  end
+
+  # The adapter's own credential failing says nothing about the backend's health.
+  # Counted, it would open the breaker, and the caller would see "breaker open" for the
+  # next 30s instead of what is wrong with the token, even after it is fixed.
+  defp count_failure(name, reason) do
+    if Backend.credential_failure?(reason), do: :ok, else: record_failure(name)
   end
 
   defp record_failure(name) do

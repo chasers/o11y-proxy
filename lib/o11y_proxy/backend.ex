@@ -23,6 +23,36 @@ defmodule O11yProxy.Backend do
           max_window_ms: pos_integer() | :infinity
         }
 
+  # The adapter's own credential failed, not the backend: it could not be read
+  # (`unavailable`, may turn up), is not a credential at all (`invalid`), or the backend
+  # refused it (`rejected`, usually expired before its refresh). An adapter returns these
+  # as `{kind, message}` from any callback that needs the credential.
+  @credential_failures [:credential_unavailable, :credential_invalid, :credential_rejected]
+
+  @typedoc """
+  An adapter's own credential failing; see `credential_failure?/1`. The detail should be a
+  message for the caller; anything else is shown with `inspect/1`.
+  """
+  @type credential_failure ::
+          {:credential_unavailable | :credential_invalid | :credential_rejected, term()}
+
+  @doc """
+  Whether an error reason is the adapter's own credential failing rather than the backend.
+  These never reached a backend, or were turned away at its door, so they say nothing
+  about its health: `O11yProxy.Sources` keeps them out of the circuit breaker, and
+  `O11yProxy.ResponseError` gives each its own message.
+  """
+  @spec credential_failure?(term()) :: boolean()
+  # Keyed on the kind alone: a detail of the wrong type is a bug in the adapter, and should
+  # not also open the breaker on a healthy backend.
+  def credential_failure?({kind, _detail}) when kind in @credential_failures, do: true
+
+  def credential_failure?(_reason), do: false
+
+  @doc false
+  @spec credential_failure_kinds() :: [atom()]
+  def credential_failure_kinds, do: @credential_failures
+
   @doc "NimbleOptions schema for this backend's source config block. Validated at boot."
   @callback config_schema() :: keyword()
 

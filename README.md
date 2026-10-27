@@ -228,7 +228,7 @@ For a real service, use the release tarball instead of the binary. It has the st
 start scripts:
 
 ```bash
-tar xzf o11y_proxy-0.4.0-linux-x86_64.tar.gz
+tar xzf o11y_proxy-0.5.0-linux-x86_64.tar.gz
 ./bin/o11y_proxy daemon      # or: start, start_iex
 ./bin/o11y_proxy rpc 'O11yProxy.Sources.list()'
 ./bin/o11y_proxy stop
@@ -346,6 +346,49 @@ query.
 Apple silicon and Linux binaries are fine. On an Intel Mac, run from source, or run the
 tarball as a daemon and use HTTP; note the tarball gives you `bin/o11y_proxy daemon`, not
 the one-shot CLI. See [Building the binaries](#developing) for why the artifacts differ.
+
+</details>
+
+<details>
+<summary><b>VictoriaMetrics behind vmauth, with a token from a broker</b></summary>
+
+When VictoriaMetrics sits behind an auth proxy such as `vmauth` that takes short-lived
+JWTs, point the source at a file that something else keeps fresh: a token broker's
+Kubernetes operator writing a Secret, a sidecar, a projected service account token.
+
+```yaml
+sources:
+  - name: prod_metrics
+    backend: victoriametrics
+    signal: metrics
+    url: https://vmauth.internal:8427
+    auth: bearer_file
+    token_file: /var/run/secrets/vm-token/token   # a mounted Secret
+```
+
+- **The file is reread on every request**, so a refreshed token is used on the next query.
+  The proxy holds no broker credentials and never refreshes the token itself.
+- **The token is the proxy's, not the caller's.** `vmauth` enforces whatever the token
+  grants the proxy as a whole, such as read-only on one tenant. Each caller's policy is
+  still enforced by the proxy first ([`docs/authentication.md`](docs/authentication.md)).
+  So grant the proxy no more than the widest policy you give any caller.
+- **A token that may come right fails the query as `unreachable`.** That is a missing or
+  empty file, a brief system error reading it, or a token VictoriaMetrics refuses with HTTP
+  401, usually one that expired before its refresh.
+- **A config mistake fails as `internal`.** That is a file holding something other than a
+  token, one that is not a regular file, one the proxy may not read, or a token accepted
+  but refused with HTTP 403: check the scope the broker grants the proxy.
+- Either way the reason is in the message, nothing is sent without a token, and `/healthz`
+  shows the source unhealthy. **None of these count toward the circuit breaker**, since
+  the backend itself is fine.
+- **Every token failure is logged as a warning with the path**: at startup, and on every
+  request that fails, which includes `/healthz` checks and each label a schema lookup
+  reads. A broker outage repeats the line at that pace; collapse it in your log pipeline
+  if needed. A file that cannot be read at startup is not refused,
+  since whatever writes it may start after the proxy.
+- **`token`, `username` or `password` with `bearer_file`, or `token_file` with another
+  mode, is refused**, since it would be silently ignored.
+- The file must hold one bearer token. Surrounding whitespace is ignored.
 
 </details>
 

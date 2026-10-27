@@ -17,6 +17,19 @@ defmodule O11yProxy.RouterTest do
     assert Jason.decode!(conn.resp_body) == %{"sources" => %{}}
   end
 
+  test "GET /healthz gives a failing source the same message /v1/query would" do
+    name = start_fake_source!(signal: :logs, fail_credential: true)
+
+    conn = conn(:get, "/healthz") |> O11yProxy.Router.call(@opts)
+
+    assert %{"sources" => %{^name => source}} = Jason.decode!(conn.resp_body)
+
+    assert source == %{
+             "status" => "error",
+             "message" => "no credential for this source: the token file is empty"
+           }
+  end
+
   test "GET /v1/sources/:name/schema 404s for an unknown source" do
     conn = conn(:get, "/v1/sources/nope/schema") |> O11yProxy.Router.call(@opts)
     assert conn.status == 404
@@ -273,6 +286,30 @@ defmodule O11yProxy.RouterTest do
       assert O11yProxy.Sources.breaker_status(name) == :closed
     end
 
+    test "a source failing to get its own credential never trips the breaker, and says why" do
+      name = start_fake_source!(signal: :logs, fail_credential: true)
+
+      for _ <- 1..5 do
+        assert {:error, {:credential_unavailable, _}} =
+                 O11yProxy.Sources.run_query(name, logs_query(), O11yProxy.Caller.local(), 1_000)
+      end
+
+      assert O11yProxy.Sources.breaker_status(name) == :closed
+
+      conn =
+        post_json(:post, "/v1/query", %{
+          "sources" => [name],
+          "signal" => "logs",
+          "from" => "now-1h",
+          "to" => "now",
+          "mode" => "sample"
+        })
+
+      assert %{"errors" => [error]} = Jason.decode!(conn.resp_body)
+      assert error["code"] == "unreachable"
+      assert error["message"] == "no credential for this source: the token file is empty"
+    end
+
     test "a success resets the failure count, so the breaker only trips on consecutive failures" do
       name = start_fake_source!(signal: :logs)
 
@@ -311,6 +348,7 @@ defmodule O11yProxy.RouterTest do
         table: "fake_logs",
         allow_raw: false,
         fail: Keyword.get(opts, :fail, false),
+        fail_credential: Keyword.get(opts, :fail_credential, false),
         trace_id: Keyword.get(opts, :trace_id, "abc123")
       }
     })

@@ -22,6 +22,9 @@ defmodule O11yProxy.Test.FakeBackend do
       # partial-failure fan-out tests need deterministic failures), `trace_id` stamps a
       # shared trace ID across fakes so a /v1/context fan-out has something to correlate.
       fail: [type: :boolean, default: false],
+      # `fail_credential` fails execute/2 the way an adapter does when it cannot get its own
+      # credential, which must not move the breaker.
+      fail_credential: [type: :boolean, default: false],
       trace_id: [type: :string, default: "abc123"]
     ]
   end
@@ -33,6 +36,7 @@ defmodule O11yProxy.Test.FakeBackend do
        table: Map.fetch!(config, :table),
        allow_raw: Map.get(config, :allow_raw, false),
        fail: Map.get(config, :fail, false),
+       fail_credential: Map.get(config, :fail_credential, false),
        trace_id: Map.get(config, :trace_id, "abc123")
      }}
   end
@@ -76,6 +80,9 @@ defmodule O11yProxy.Test.FakeBackend do
   def execute(%{fail: true}, _native),
     do: {:error, {:fake_unreachable, "fake backend set to fail"}}
 
+  def execute(%{fail_credential: true}, _native),
+    do: {:error, {:credential_unavailable, "the token file is empty"}}
+
   def execute(state, native) do
     records = [
       %Record{
@@ -104,6 +111,9 @@ defmodule O11yProxy.Test.FakeBackend do
   end
 
   @impl true
+  def health(%{fail_credential: true}),
+    do: {:error, {:credential_unavailable, "the token file is empty"}}
+
   def health(_state), do: :ok
 
   defp check_operators(filters) do
