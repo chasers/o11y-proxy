@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build the image from (e.g. v0.5.0)
+        description: Existing release tag to build the image from (v0.5.1 or later; e.g. v0.5.1)
         required: true
 
 permissions:

@@ -228,7 +228,7 @@ For a real service, use the release tarball instead of the binary. It has the st
 start scripts:
 
 ```bash
-tar xzf o11y_proxy-0.5.0-linux-x86_64.tar.gz
+tar xzf o11y_proxy-0.5.1-linux-x86_64.tar.gz
 ./bin/o11y_proxy daemon      # or: start, start_iex
 ./bin/o11y_proxy rpc 'O11yProxy.Sources.list()'
 ./bin/o11y_proxy stop
@@ -293,7 +293,7 @@ server:
 Every release also publishes a container image for `linux/amd64` and `linux/arm64`:
 
 ```bash
-docker pull ghcr.io/chasers/o11y-proxy:0.5.0    # or :latest
+docker pull ghcr.io/chasers/o11y-proxy:0.5.1    # or :latest
 ```
 
 The image runs the release tarball with `bin/o11y_proxy start`. It is the server only.
@@ -563,7 +563,8 @@ tarball is native by construction. Build your own with `MIX_ENV=prod mix release
 Releases are automatic. Bump `version:` in `mix.exs`, merge to `main`, and CI builds the
 binaries, tests them, and publishes the release. It then pushes the container image. To
 push the image again for an existing tag, run the `Publish container image` workflow by
-hand with that tag.
+hand with that tag. The image builds from the tag, so this works only for `v0.5.1` and
+later. Earlier tags have no `Dockerfile`.
 
 </details>
 
